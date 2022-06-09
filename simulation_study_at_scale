@@ -1,10 +1,7 @@
 ml R/4
 ml gcc/9.1.0
 #
-#setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/")
-setwd("~/Data/idpopcontrols/simulation/") # cluster
-# setwd("/fastscratch/myscratch/dduchen/") # cluster, faster?
-#
+setwd("~/...") # HPC environment
 #
 options(stringsAsFactors=F)
 list.of.packages <- c(
@@ -18,23 +15,13 @@ list.of.packages <- c(
 )
 lapply(list.of.packages, require, character.only = TRUE)
 #
-# change model so the association is independent of exposure/maf etc.
-scenario="U1~HCV Exposure/Selection (OR=2)"
-myModel <- '
-    HCV_Clearance ~ 0*SNP
-    Selection_HCV_Exposure ~ log(1.5)*U1 + 0*HCV_Clearance
-    U1 ~ 0.06625*SNP
-  '
-# For an observed U1~Exposure (OR=2) and U1~SNP (B=0.1), but that's dependent on the number of cases etc.
-# Change so that the actual relationship reflects the expected associations
-#####################################################################
-### --- Scenario 1: Variable association between U1~HCV exposure  ###
-#####################################################################
+######################################################################################
+### --- Scenario 1: Variable association between U1~Pathogen (e.g., HCV) exposure  ###
+######################################################################################
 #######
 #######
-# ----- 'Outcome' ~ 'HCV_Clearance'
-# -----
-#
+# ----- 'Outcome' ==> 'HCV_Clearance'
+#######
 #######
 get_results_scenario1<-function(cohort_size,U1_Exposure_OR,clearance_prevalence,prevalence,N_cases,N_exposed_controls,N_shared,MAF,seed){
   N=cohort_size
@@ -102,15 +89,12 @@ get_results_scenario1<-function(cohort_size,U1_Exposure_OR,clearance_prevalence,
   results$shared[1,]<-c(as.numeric(cases_shared),scenario,"shared")
 return(rbindlist(results))
 }
+# quick test
 ptm <- proc.time()
 get_results_scenario1(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123)
 proc.time() - ptm
-# ~0.65 seconds
 # for 100 iterations:
-#microbenchmark(get_results_scenario1(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
-# Unit: milliseconds
-#      min       lq     mean   median       uq      max neval
-# 508.6611 570.8773 672.8812 705.6996 739.0166 1114.076   100
+microbenchmark(get_results_scenario1(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
 #
 ########################################################
 ### --- Scenario 2: Variable HCV exposure prevalence ###
@@ -173,17 +157,12 @@ get_results_scenario2<-function(cohort_size,clearance_prevalence,U1_Exposure_OR,
   results$shared[1,]<-c(as.numeric(cases_shared),paste0("HCV exposure prevalence: ",exposure_prevalence),"shared")
   return(rbindlist(results))
 }
+# quick test
 ptm <- proc.time()
 get_results_scenario2(cohort_size = 500000,prevalence = 0.05,clearance_prevalence = 0.5,U1_Exposure_OR=2,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123)
 proc.time() - ptm
-# ~0.65 seconds
-#
 # for 100 iterations:
-#microbenchmark(get_results_scenario2(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
-# Unit: milliseconds
-#      min       lq     mean   median       uq      max neval
-# 534.8695 561.6318 645.5026 695.7994 715.0354 753.1448   100
-#
+microbenchmark(get_results_scenario2(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
 #
 ###################################################
 ### --- Scenario 3: Variable HCV clearance rate ###
@@ -246,23 +225,22 @@ get_results_scenario3<-function(cohort_size,clearance_prevalence,U1_Exposure_OR,
   results$shared[1,]<-c(as.numeric(cases_shared),paste0("HCV clearance rate: ",clearance_prevalence),"shared")
   return(rbindlist(results))
 }
+# quick test:
 ptm <- proc.time()
 get_results_scenario3(cohort_size = 500000,prevalence = 0.25,clearance_prevalence = 0.2,U1_Exposure_OR=2,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123)
 proc.time() - ptm
-# ~0.65 seconds
-#microbenchmark(get_results_scenario3(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
-# Unit: milliseconds
-#      min       lq     mean   median       uq      max neval
-# 502.5809 557.6602 650.8094 705.7689 730.0042 768.5732   100
+# 100 iterations
+microbenchmark(get_results_scenario3(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
+#
 ##############################################################################
 ##############################################################################
 # 20k Cases, 20k HCV Exposed Controls, 200k (1:10) Shared controls
 ##############################################################################
 ##############################################################################
-#qrsh -pe local 40 -l mem_free=2G,h_vmem=2G,h_fsize=500G
-cd ~/Data/idpopcontrols/simulation/sims_20kcases/
+# HPC environment
+cd ~/...
 # N=500k iterations per strata:
-detectCores() #local=12, 256 on cluster
+detectCores()
 # cluster:
 # scenario 1: OR=1, 1.2, 2
 cl <- makeCluster(40,methods=F,autoStop = T)
@@ -324,7 +302,6 @@ scenario1_or1 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorha
                                     seed = i)
 proc.time() - ptm
 stopCluster(cl)
-#timing: 25219.039 seconds
 ################################################################################
 #save(scenario1_or1,scenario1_or1_2,scenario1_or2,file="scenario1_at_scale.R") #
 #save(scenario1_or1,scenario1_or1_2,scenario1_or2,file="scenario1_20k_at_scale.R") #
@@ -515,14 +492,9 @@ stopCluster(cl)
 #save(scenario2_prev100_or1_2,file="scenario2_20k_at_scale_Prevalence_100_OR_1_2.R")
 stopCluster(cl)
 #
-#
-# local for 100 replicates: 16 seconds
-# local for 1000 replicates: 151.4 seconds
-# cluster for 1000 replicates: 20 cores=48.597 seconds
-# 7 hours for ~500k replicates
-###########################################
-# Scenario 3: Variable HCV Clearance Rate #
-###########################################
+##################################################################################################
+# Scenario 3: Variable outcome (e.g., Of those infected with HCV, proportion who clear infection #
+##################################################################################################
 # 20% clearance rate, OR=2
 cl <- makeCluster(40,methods=F,autoStop = T)
 clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
@@ -634,15 +606,12 @@ stopCluster(cl)
 #save(scenario3_clearance80_or1_2,file="scenario3_20k_at_scale_Clearance_80_OR_1_2.R")
 ##############################################################################################
 ##############################################################################################
+#########------ 20k Cases, 20k Exposed Controls, 20k (1:1) Shared controls ------#########
 ##############################################################################################
 ##############################################################################################
-#########------ 20k Cases, 20k HCV Exposed Controls, 20k (1:1) Shared controls ------#########
-##############################################################################################
-##############################################################################################
-#qrsh -pe local 40 -l mem_free=2G,h_vmem=2G,h_fsize=500G
-setwd("~/Data/idpopcontrols/simulation/sims_20kall/")
+setwd("~/...")
 # N=500k iterations per strata:
-detectCores() #local=12, 256 on cluster
+detectCores() 
 # cluster:
 # scenario 1: OR=1, 1.2, 2
 cl <- makeCluster(40,methods=F,autoStop = T)
@@ -703,9 +672,8 @@ proc.time() - ptm
 stopCluster(cl)
 ################################################################################
 #save(scenario1_or1,scenario1_or1_2,scenario1_or2,file="scenario1_20kall_at_scale.R") #
-# scenario 1: screen -r 8916
 ################################################################################
-setwd("~/Data/idpopcontrols/simulation/sims_20kall")
+#
 ################################################
 # Scenario 2: Variable HCV Exposure prevalence #
 ################################################
@@ -887,9 +855,9 @@ stopCluster(cl)
 #save(scenario2_prev100_or1_2,file="scenario2_20kall_at_scale_Prevalence_100_OR_1_2.R")
 stopCluster(cl)
 #
-###########################################
-# Scenario 3: Variable HCV Clearance Rate #
-###########################################
+####################################################################
+# Scenario 3: Variable prop. observed outcome (HCV Clearance) Rate #
+####################################################################
 # 20% clearance rate, OR=2
 cl <- makeCluster(40,methods=F,autoStop = T)
 clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
@@ -997,12 +965,11 @@ stopCluster(cl)
 #save(scenario3_clearance80_or1_2,file="scenario3_20kall_at_scale_Clearance_80_OR_1_2.R")
 ###############################################################################################
 ###############################################################################################
-###############################################################################################
 #### --- summarize results, plots etc. --- ####
 # 20k cases, 20k hcv exposed controls, 200k (1:10) shared controls
-setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20k_cases")
+setwd("~/...simulations_20k_cases")
 # 20k cases, 20k hcv exposed controls, 20k (1:1) shared controls
-setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20kall")
+setwd("~/...simulations_20kall")
 #
 # Scenario 1
 options(stringsAsFactors=F)
@@ -1010,6 +977,7 @@ library(data.table);library(ggplot2);library(dplyr);library(plyr)
 ##########################################################
 load("scenario1_20k_at_scale.R") #<-- 1:10 ratio
 load("scenario1_20kall_at_scale.R") #<-- 1:1 ratio
+# load then run/repeat code below within each scenario
 ##########################################################
 clearance_snp_combined<-rbind(scenario1_or2,scenario1_or1_2,scenario1_or1)
 #--
@@ -1018,7 +986,7 @@ clearance_snp_combined$'Std. Error'<-as.numeric(clearance_snp_combined$'Std. Err
 clearance_snp_combined$'z value'<-as.numeric(clearance_snp_combined$'z value')
 clearance_snp_combined$'Pr(>|z|)'<-as.numeric(clearance_snp_combined$'Pr(>|z|)')
 #
-# ignore suggestive significance
+# ignore suggestive significance? - focus on p<5x10-8 or not
 clearance_snp_combined$psig<-ifelse(clearance_snp_combined$`Pr(>|z|)`<=5e-8,"P<5e-8","Non-significant")
 #--
 library(plyr)
@@ -1048,6 +1016,7 @@ scenario controls      N  mean_OR
 # U1~HCV Exposure/Selection (OR=1.2)   shared 500000 1.040337
 #   U1~HCV Exposure/Selection (OR=2)  exposed 500000 1.000148
 #   U1~HCV Exposure/Selection (OR=2)   shared 500000 1.132308
+# v. little variability:
 t.test(sumdat_20vs200$mean_OR,sumdat_20vs20$mean_OR,paired = T)
 # paired t-test, P>0.05
 
@@ -1133,6 +1102,7 @@ zcomps<-as.list(unique(clearance_snp_combined$scenario))
 # -- also explicitly discussed in:
 # PATERNOSTER, R., BRAME, R., MAZEROLLE, P., & PIQUERO, A. (1998). USING THE CORRECT STATISTICAL TEST FOR THE EQUALITY OF REGRESSION COEFFICIENTS. Criminology, 36(4), 859–866. https://doi.org/10.1111/j.1745-9125.1998.tb01268.x
 # supposedly also improves comparisons from cohorts involving large differences in sample sizes
+# -- exploratory purposes, we also perform additional comparisons/statistical tests
 for(i in 1:length(unique(sumdat$scenario))){
   scenario_i<-unique(sumdat$scenario)[i]
   beta_num<-sumdat[sumdat$scenario==scenario_i & sumdat$controls=="shared",]$mean_beta-sumdat[sumdat$scenario==scenario_i & sumdat$controls=="exposed",]$mean_beta
@@ -1270,8 +1240,6 @@ scenario1_or1_2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenar
 scenario1_or2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
                            clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="shared",]$Estimate,
                            method = "simulated", dist = FALSE, Nsim = 1000)
-# use these pvalues?
-
 ###############################################################################################################################################################################################################
 # Heterogeneity tests # <-- performed for analyses using 20k cases vs. 200k controls
 ### bootstrap-based heterogeneity test for between-study heterogneity in meta analysis : https://cran.r-project.org/web/packages/boot.heterogeneity/vignettes/boot.heterogeneity.html
@@ -1299,34 +1267,6 @@ control_type_and_U1scenario<-metagen(TE=dat_subgroup$Estimate, seTE=dat_subgroup
 #save(control_type_and_U1scenario, file="Metaanalysis_Heterogeneity_Results_Scenario1_20kcases_3kSubsample.R")
 save(control_type_and_U1scenario, file="Metaanalysis_Heterogeneity_Results_Scenario1_1kSubsample.R")
 #
-Test of heterogeneity:
-        Q d.f. p-value
- 61737.78 5999       0
-Results for subgroups (random effects model):
-                                                  k     OR           95%-CI
-subgroup = exposed, U1~HCV Exposure/Select ... 1000 0.9999 [0.9987; 1.0011]
-subgroup = exposed, U1~HCV Exposure/Select ... 1000 1.0004 [0.9991; 1.0016]
-subgroup = exposed, U1~HCV Exposure/Select ... 1000 1.0003 [0.9991; 1.0015]
-subgroup = shared, U1~HCV Exposure/Selecti ... 1000 1.0000 [0.9991; 1.0010]
-subgroup = shared, U1~HCV Exposure/Selecti ... 1000 1.0408 [1.0398; 1.0418]
-subgroup = shared, U1~HCV Exposure/Selecti ... 1000 1.1336 [1.1326; 1.1346]
-                                                 tau^2    tau
-subgroup = exposed, U1~HCV Exposure/Select ...       0      0
-subgroup = exposed, U1~HCV Exposure/Select ... <0.0001 0.0044
-subgroup = exposed, U1~HCV Exposure/Select ... <0.0001 0.0018
-subgroup = shared, U1~HCV Exposure/Selecti ...       0      0
-subgroup = shared, U1~HCV Exposure/Selecti ... <0.0001 0.0032
-subgroup = shared, U1~HCV Exposure/Selecti ... <0.0001 0.0019
-Test for subgroup differences (random effects model):
-                        Q d.f. p-value
-Between groups   54872.43    5       0
-# meta notes
-# common effects model: I^2
-# random effects model: Tau
-# I2='proportion of total variation in study estimates that is due to heterogeneity' -  Quantifying heterogeneity in a meta-analysis, doi.org/10.1002/sim.1186
-# Tau='between‐study variance component (τ^2)'
-# Tau estimation via maximum-likelihood: Viechtbauer, W. (2005). Bias and Efficiency of Meta-Analytic Variance Estimators in the Random-Effects Model. Journal of Educational and Behavioral Statistics, 30(3), 261–293. https://doi.org/10.3102/10769986030003261
-
 ##################################################################################
 ##################################################################################
 ###########################-------- Scenario 2 --------###########################
@@ -1336,7 +1276,7 @@ options(stringsAsFactors=F)
 library(data.table);library(ggplot2);library(dplyr);library(plyr);library(MetBrewer)
 ########################################
 # 20k cases vs. 200k shared controls
-setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20k_cases")
+setwd("~/...simulations_20k_cases")
 load("scenario2_20k_at_scale_Prevalence_05_OR_1_2.R")
 scenario2_prev05_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
 load("scenario2_20k_at_scale_Prevalence_05_OR_2.R")
@@ -1359,7 +1299,7 @@ load("scenario2_20k_at_scale_Prevalence_100_OR_2.R")
 scenario2_prev100_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
 ######################################
 # 20k cases vs. 20k shared controls
-setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20kall")
+setwd("~/...simulations_20kall")
 load("scenario2_20kall_at_scale_Prevalence_05_OR_1_2.R")
 scenario2_prev05_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
 load("scenario2_20kall_at_scale_Prevalence_05_OR_2.R")
@@ -1652,32 +1592,7 @@ dev.off()
 ######
 # -- proportion of replicates with genome-wide significant associations
 #
-# 20k vs. 20k
 prop.table(table(clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",]$prevalence_u1_new,clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",]$psig))*1000
-#                                                                    Non-significant  P<5e-8
-#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=1.2)         99.4340  0.5660
-#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=1.2)         99.9694  0.0306
-#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=1.2)          99.9974  0.0026
-#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=1.2)         99.9994  0.0006
-#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=1.2)            99.9998  0.0002
-#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=2)            0.0076 99.9924
-#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=2)           18.4272 81.5728
-#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=2)            79.7594 20.2406
-#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=2)           99.4550  0.5450
-#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=2)              99.9998  0.0002
-#
-# 20k vs. 200k
-#                                                                    Non-significant   P<5e-8
-#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=1.2)         92.6370   7.3630
-#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=1.2)         99.6502   0.3498
-#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=1.2)          99.9728   0.0272
-#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=1.2)         99.9980   0.0020
-#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=1.2)           100.0000   0.0000
-#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=2)            0.0000 100.0000
-#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=2)            0.0706  99.9294
-#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=2)            20.1756  79.8244
-#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=2)           92.8640   7.1360
-#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=2)             100.0000   0.0000
 #
 ########## Figure for manuscript:##########
 setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/")
@@ -1810,97 +1725,7 @@ control_type_and_HCVprevalence<-metagen(TE=dat_subgroup$Estimate, seTE=dat_subgr
         overall.hetstat=T,label.e="HCV Clearance", label.c="Controls",
         test.subgroup=T,method.tau = "ML", print.subgroup.name=TRUE, warn=TRUE)
 #save(control_type_and_HCVprevalence, file="Metaanalysis_Heterogeneity_Results_Scenario2_1k.R")
-# order:
-[1] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=1.2), exposed"
-[2] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=1.2), shared"
-[3] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=2), exposed"
-[4] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=2), shared"
-[5] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=1.2), exposed"
-[6] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=1.2), shared"
-[7] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=2), exposed"
-[8] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=2), shared"
-[9] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=1.2), exposed"
-[10] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=1.2), shared"
-[11] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=2), exposed"
-[12] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=2), shared"
-[13] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=1.2), exposed"
-[14] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=1.2), shared"
-[15] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=2), exposed"
-[16] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=2), shared"
-[17] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=1.2), exposed"
-[18] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=1.2), shared"
-[19] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=2), exposed"
-[20] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=2), shared"
-
-Results for subgroups (random effects model):
-                                                  k     OR           95%-CI
 #
-subgroup = HCV exposure prevalence: 0.05,  ... 1000 0.9996 [0.9984; 1.0008]
-subgroup = HCV exposure prevalence: 0.05,  ... 1000 1.0585 [1.0576; 1.0595]
-subgroup = HCV exposure prevalence: 0.05,  ... 1000 0.9996 [0.9984; 1.0007]
-subgroup = HCV exposure prevalence: 0.05,  ... 1000 1.1960 [1.1949; 1.1971]
-subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.0007 [0.9995; 1.0020]
-subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.0401 [1.0392; 1.0410]
-subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.0007 [0.9994; 1.0019]
-subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.1309 [1.1299; 1.1319]
-subgroup = HCV exposure prevalence: 0.5, U ... 1000 1.0000 [0.9988; 1.0012]
-subgroup = HCV exposure prevalence: 0.5, U ... 1000 1.0295 [1.0285; 1.0304]
-subgroup = HCV exposure prevalence: 0.5, U ... 1000 0.9995 [0.9983; 1.0007]
-subgroup = HCV exposure prevalence: 0.5, U ... 1000 1.0944 [1.0934; 1.0954]
-subgroup = HCV exposure prevalence: 0.75,  ... 1000 0.9998 [0.9985; 1.0011]
-subgroup = HCV exposure prevalence: 0.75,  ... 1000 1.0185 [1.0176; 1.0194]
-subgroup = HCV exposure prevalence: 0.75,  ... 1000 1.0001 [0.9988; 1.0013]
-subgroup = HCV exposure prevalence: 0.75,  ... 1000 1.0585 [1.0576; 1.0595]
-subgroup = HCV exposure prevalence: 1, U1~ ... 1000 1.0001 [0.9989; 1.0013]
-subgroup = HCV exposure prevalence: 1, U1~ ... 1000 1.0007 [0.9998; 1.0016]
-subgroup = HCV exposure prevalence: 1, U1~ ... 1000 1.0003 [0.9991; 1.0016]
-subgroup = HCV exposure prevalence: 1, U1~ ... 1000 0.9999 [0.9990; 1.0008]
-#                                                tau^2    tau
-subgroup = HCV exposure prevalence: 0.05,  ...       0      0
-subgroup = HCV exposure prevalence: 0.05,  ...       0      0
-subgroup = HCV exposure prevalence: 0.05,  ...       0      0
-subgroup = HCV exposure prevalence: 0.05,  ... <0.0001 0.0038
-subgroup = HCV exposure prevalence: 0.25,  ...       0      0
-subgroup = HCV exposure prevalence: 0.25,  ... <0.0001 0.0016
-subgroup = HCV exposure prevalence: 0.25,  ... <0.0001 0.0051
-subgroup = HCV exposure prevalence: 0.25,  ... <0.0001 0.0017
-subgroup = HCV exposure prevalence: 0.5, U ...       0      0
-subgroup = HCV exposure prevalence: 0.5, U ... <0.0001 0.0025
-subgroup = HCV exposure prevalence: 0.5, U ... <0.0001 0.0049
-subgroup = HCV exposure prevalence: 0.5, U ... <0.0001 0.0029
-subgroup = HCV exposure prevalence: 0.75,  ... <0.0001 0.0063
-subgroup = HCV exposure prevalence: 0.75,  ...       0      0
-subgroup = HCV exposure prevalence: 0.75,  ...       0      0
-subgroup = HCV exposure prevalence: 0.75,  ...       0      0
-subgroup = HCV exposure prevalence: 1, U1~ ...       0      0
-subgroup = HCV exposure prevalence: 1, U1~ ... <0.0001 0.0003
-subgroup = HCV exposure prevalence: 1, U1~ ... <0.0001 0.0037
-subgroup = HCV exposure prevalence: 1, U1~ ...       0      0
-#                                                    Q  I^2
-subgroup = HCV exposure prevalence: 0.05,  ...  954.05 0.0%
-subgroup = HCV exposure prevalence: 0.05,  ...  977.92 0.0%
-subgroup = HCV exposure prevalence: 0.05,  ...  984.48 0.0%
-subgroup = HCV exposure prevalence: 0.05,  ... 1073.46 6.9%
-subgroup = HCV exposure prevalence: 0.25,  ...  974.16 0.0%
-subgroup = HCV exposure prevalence: 0.25,  ... 1011.49 1.2%
-subgroup = HCV exposure prevalence: 0.25,  ... 1072.40 6.8%
-subgroup = HCV exposure prevalence: 0.25,  ... 1014.34 1.5%
-subgroup = HCV exposure prevalence: 0.5, U ...  960.58 0.0%
-subgroup = HCV exposure prevalence: 0.5, U ... 1028.76 2.9%
-subgroup = HCV exposure prevalence: 0.5, U ... 1063.84 6.1%
-subgroup = HCV exposure prevalence: 0.5, U ... 1038.88 3.8%
-subgroup = HCV exposure prevalence: 0.75,  ... 1102.11 9.4%
-subgroup = HCV exposure prevalence: 0.75,  ...  984.66 0.0%
-subgroup = HCV exposure prevalence: 0.75,  ...  981.03 0.0%
-subgroup = HCV exposure prevalence: 0.75,  ...  931.41 0.0%
-subgroup = HCV exposure prevalence: 1, U1~ ...  955.82 0.0%
-subgroup = HCV exposure prevalence: 1, U1~ ... 1000.05 0.1%
-subgroup = HCV exposure prevalence: 1, U1~ ... 1035.00 3.5%
-subgroup = HCV exposure prevalence: 1, U1~ ...  990.48 0.0%
-
-
-
-
 ########################################################
 ###### Prevalence associated with control type? ########
 sumdat<-ddply(clearance_snp_combined, c("prevalence_scenario","u1","controls"), summarise,
@@ -1920,9 +1745,7 @@ summary(glm(mean_beta~prevalence+controls+u1,data = sumdat))
 # prevalence                         -0.05832    0.02154  -2.708 0.015524 *   <-- vs. 20k
 # controlsshared                      0.05967    0.01463   4.077 0.000877 *** <-- vs. 20k
 #
-# Interpretation:
-# Prevalence is negatively associated with Beta estimates
-# Among shared controls only:
+# Instead - focus on effect among shared controls only:
 summary(glm(mean_beta~prevalence+u1,data = sumdat[sumdat$controls=="shared",]))
 # Coefficients:
 #                                    Estimate Std. Error t value Pr(>|t|)
@@ -1950,7 +1773,7 @@ summary(glm(mean_beta~prevalence,data = sumdat[sumdat$controls=="shared" & sumda
 ###########################-------- Scenario 3 --------###########################
 ##################################################################################
 ##################################################################################
-setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20k_cases")
+setwd("~/...simulations_20k_cases")
 options(stringsAsFactors=F)
 library(data.table);library(ggplot2);library(dplyr);library(plyr);library(MetBrewer)
 load("scenario3_20k_at_scale_Clearance_20_OR_1_2.R")
@@ -1966,7 +1789,7 @@ scenario3_clearance80_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
 load("scenario3_20k_at_scale_Clearance_80_OR_2.R")
 scenario3_clearance80_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
 #
-setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20kall")
+setwd("~/...simulations_20kall")
 options(stringsAsFactors=F)
 library(data.table);library(ggplot2);library(dplyr);library(plyr);library(MetBrewer)
 load("scenario3_20kall_at_scale_Clearance_20_OR_1_2.R")
@@ -2197,21 +2020,7 @@ dev.off()
 #
 # proportion of replicates reaching genome-wide significance?
 prop.table(table(clearance_snp_combined[controls=="Population-Based Controls",]$clearance_u1_new,clearance_snp_combined[controls=="Population-Based Controls",]$psig))*1000
-# 20k vs. 200k
-#                                                                      Non-significant P<5e-8
-#  Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=1.2)          496280   3720 (0.744%)
-#  Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=1.2)          498251   1749 (0.3498%)
-#  Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=1.2)          499128    872 (0.1744%)
-#  Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=2)                16 499984 (99.9968%)
-#  Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=2)               353 499647 (99.9294%)
-#  Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=2)              3292 496708 (99.3416%)
-# 20k vs. 20k
-# Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=1.2)           499733    267 (0.0534)
-# Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=1.2)           499847    153 (0.0306)
-# Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=1.2)           499915     85 (0.017)
-# Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=2)              32980 467020 (93.404)
-# Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=2)              92136 407864 (81.5728)
-# Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=2)             173962 326038 (65.2076)
+#
 #
 library(ggridges);library(viridis);library(hrbrthemes);library(ggstance)
 png("scenario_3_exposed_vs_shared_controls_pval_ggridge.png",type="cairo",width = 10, height = 6.5, units= 'in', res=1000)
@@ -2287,34 +2096,6 @@ control_type_and_clearance<-metagen(TE=dat_subgroup$Estimate, seTE=dat_subgroup$
         overall.hetstat=T,label.e="HCV Clearance", label.c="Controls",
         test.subgroup=T,method.tau = "ML", print.subgroup.name=TRUE, warn=TRUE)
 #save(control_type_and_clearance, file="Metaanalysis_Heterogeneity_Results_Scenario3_1k.R")
-# Results for subgroups (random effects model):
-#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=1.2), exposed"
-#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=1.2), shared"
-#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=2), exposed"
-#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=2), shared"
-#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=1.2), exposed"
-#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=1.2), shared"
-#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=2), exposed"
-#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=2), shared"
-#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=1.2), exposed"
-#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=1.2), shared"
-#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=2), exposed"
-#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=2), shared"
-#    k      OR    Tau2    I2
-# 1000	0.9996       0	0.0%
-# 1000	1.044	  <0.001	0.5%
-# 1000	0.9998	     0	0.0%
-# 1000	1.1452	<0.001	2.1%
-# 1000	0.9995	<0.001	4.0%
-# 1000	1.0412	     0	0.0%
-# 1000	1.0006	<0.001	4.5%
-# 1000	1.1326	     0	0.0%
-# 1000	1.0001	     0	0.0%
-# 1000	1.0374	     0	0.0%
-# 1000	1.0001	<0.001	6.0%
-# 1000	1.1198	<0.001	1.9%
-#
-#
 #
 #####################################################
 ###### Clearance associated with control type? ######
@@ -2348,18 +2129,18 @@ summary(glm(mean_beta~clearance,data = sumdat[sumdat$controls=="shared" & sumdat
 #             Estimate Std. Error t value Pr(>|t|)
 #clearance   -0.037126   0.001898  -19.56   0.0325 * <---200k controls
 #clearance   -0.037182   0.001937   -19.2  0.03313 * <---20k controls
-
 #
-
-
-
+#
+#
+#
+#
 ######################################################################################################
 # Re-run with more realistic numbers of cases:
 # same observed effect estimates?
 ######################################################################################################
-setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/realistic_case_samplesize")
+setwd("~/...realistic_case_samplesize")
 #future analysis? - seroprevalence of HCV: https://biobank.ctsu.ox.ac.uk/crystal/crystal/docs/infdisease.pdf 0.3% (0.003)
-# Will run into issue of actual number of exposed controls from the population with these prevalence estimates*N, allow resampling
+# Will run into issue of actual number of exposed controls from the population with these prevalence estimates*N, could allow resampling
 #
 # load get_results_scenario1() function above
 options(stringsAsFactors=F)

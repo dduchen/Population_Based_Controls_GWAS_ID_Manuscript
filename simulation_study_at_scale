@@ -1,0 +1,2620 @@
+ml R/4
+ml gcc/9.1.0
+#
+#setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/")
+setwd("~/Data/idpopcontrols/simulation/") # cluster
+# setwd("/fastscratch/myscratch/dduchen/") # cluster, faster?
+#
+#
+options(stringsAsFactors=F)
+list.of.packages <- c(
+  "foreach",
+  "future",
+  "doParallel",
+  "lavaan",
+  "parallelly",
+  "data.table",
+  "Rfast"
+)
+lapply(list.of.packages, require, character.only = TRUE)
+#
+# change model so the association is independent of exposure/maf etc.
+scenario="U1~HCV Exposure/Selection (OR=2)"
+myModel <- '
+    HCV_Clearance ~ 0*SNP
+    Selection_HCV_Exposure ~ log(1.5)*U1 + 0*HCV_Clearance
+    U1 ~ 0.06625*SNP
+  '
+# For an observed U1~Exposure (OR=2) and U1~SNP (B=0.1), but that's dependent on the number of cases etc.
+# Change so that the actual relationship reflects the expected associations
+#####################################################################
+### --- Scenario 1: Variable association between U1~HCV exposure  ###
+#####################################################################
+#######
+#######
+# ----- 'Outcome' ~ 'HCV_Clearance'
+# -----
+#
+#######
+get_results_scenario1<-function(cohort_size,U1_Exposure_OR,clearance_prevalence,prevalence,N_cases,N_exposed_controls,N_shared,MAF,seed){
+  N=cohort_size
+  clearance_prevalence=clearance_prevalence
+  exposure_prevalence<-prevalence
+  if(U1_Exposure_OR==2){
+  scenario="U1~HCV Exposure/Selection (OR=2)"
+  myModel <- '
+      HCV_Clearance ~ 0*SNP
+      Selection_HCV_Exposure ~ log(2)*U1 + 0*HCV_Clearance
+      U1 ~ 0.1*SNP
+    '
+  } else if(U1_Exposure_OR==1.2) {
+  scenario="U1~HCV Exposure/Selection (OR=1.2)"
+  myModel <- '
+      HCV_Clearance ~ 0*SNP
+      Selection_HCV_Exposure ~ log(1.2)*U1 + 0*HCV_Clearance
+      U1 ~ 0.1*SNP
+    '
+  } else if(U1_Exposure_OR==0) {
+  scenario="U1~HCV Exposure/Selection (OR=1)"
+  myModel <- '
+    HCV_Clearance ~ 0*SNP
+    Selection_HCV_Exposure ~ log(1)*U1 + 0*HCV_Clearance
+    U1 ~ 0.1*SNP
+  '
+  } else {print("Not a valid 'U1_Exposure_OR' option, can be OR: 0, 1.2, 2")}
+  #setup output:
+  exposed <- data.frame(matrix(NA, nrow = 1, ncol = 6))
+  colnames(exposed)<-c("Estimate","Std. Error","z value","Pr(>|z|)","scenario","controls")
+  shared <- data.frame(matrix(NA, nrow = 1, ncol = 6))
+  colnames(shared)<-c("Estimate","Std. Error","z value","Pr(>|z|)","scenario","controls")
+  results<-list(shared,exposed)
+  names(results)<-c("shared","exposed")
+  # simulate data
+  set.seed=seed
+  x<-simulateData(myModel, sample.nobs=N,seed=seed,standardized=T)
+  x$U1<-scale(x$U1) # Unknown risk factor associated with pathogen exposure
+  x$Selection_HCV_Exposure_obs<-ifelse(rank(x$Selection_HCV_Exposure,ties.method = "random")<=((1-exposure_prevalence)*nrow(x)),0,1) # simulated pathogen exposure
+  x$HCV_Clearance_obs<-ifelse(rank(x$HCV_Clearance,ties.method = "random")<=(clearance_prevalence*nrow(x)),0,1) # proportion of whom would develop the outcome post-exposure
+  x$case<-ifelse(x$Selection_HCV_Exposure_obs==1 & x$HCV_Clearance_obs==1,1,0) # actual observed outcome, requires both pathogen exposure + ability to develop the outcome
+  # genotype sim
+  p=MAF;q=(1-p)
+  genotype<-sample.int(n = 3, cohort_size,replace=T,prob = c((q^2),(2*p*q),(p^2)))-1
+  x<-x[order(x$SNP),]
+  x$SNP_obs<-sort(genotype)
+  #
+  # from the simulated individuals, use parameter-specific N's to select cases, pathogen-exposed controls, and population-based common controls without the observed outcome of interest (thereby avoiding non-differential misclassification bias of the outcome)
+  #
+  x_cases<-x[x$case==1,]
+  x_cases<-x_cases[sample.int(nrow(x_cases), N_cases,replace=F),]
+  x_exposed_controls<-x[x$Selection_HCV_Exposure_obs==1 & x$HCV_Clearance_obs==0,]
+  x_exposed_controls<-x_exposed_controls[sample.int(nrow(x_exposed_controls), N_exposed_controls,replace=F),]
+  x_shared_controls<-x[x$case==0,]
+  x_shared_controls<-x_shared_controls[sample.int(nrow(x_shared_controls), N_shared,replace=F),]
+  # matrices for fast logistic regression
+  outcome_exposed<-rbindlist(list(x_cases,x_exposed_controls))$case
+  matrix_exposed = cbind(intercept = 1, SNP_obs = rbindlist(list(x_cases,x_exposed_controls))$SNP_obs)
+  outcome_shared<-rbindlist(list(x_cases,x_shared_controls))$case
+  matrix_shared = cbind(intercept = 1, SNP_obs = rbindlist(list(x_cases,x_shared_controls))$SNP_obs)
+  #perform the actual regressions:
+  cases_shared<-glm_logistic(x=matrix_shared[,2],y=outcome_shared,full=TRUE)$info[2,]
+  cases_exposed<-glm_logistic(x=matrix_exposed[,2],y=outcome_exposed,full=TRUE)$info[2,]
+  results$exposed[1,]<-c(as.numeric(cases_exposed),scenario,"exposed")
+  results$shared[1,]<-c(as.numeric(cases_shared),scenario,"shared")
+return(rbindlist(results))
+}
+ptm <- proc.time()
+get_results_scenario1(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123)
+proc.time() - ptm
+# ~0.65 seconds
+# for 100 iterations:
+#microbenchmark(get_results_scenario1(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
+# Unit: milliseconds
+#      min       lq     mean   median       uq      max neval
+# 508.6611 570.8773 672.8812 705.6996 739.0166 1114.076   100
+#
+########################################################
+### --- Scenario 2: Variable HCV exposure prevalence ###
+########################################################
+#
+get_results_scenario2<-function(cohort_size,clearance_prevalence,U1_Exposure_OR,prevalence,N_cases,N_exposed_controls,N_shared,MAF,seed){
+  N=cohort_size
+  clearance_prevalence=clearance_prevalence
+  exposure_prevalence<-prevalence
+  #setup output:
+  exposed <- data.frame(matrix(NA, nrow = 1, ncol = 6))
+  colnames(exposed)<-c("Estimate","Std. Error","z value","Pr(>|z|)","scenario","controls")
+  shared <- data.frame(matrix(NA, nrow = 1, ncol = 6))
+  colnames(shared)<-c("Estimate","Std. Error","z value","Pr(>|z|)","scenario","controls")
+  results<-list(shared,exposed)
+  names(results)<-c("shared","exposed")
+  # simulate data
+  if(U1_Exposure_OR==2){
+  scenario="U1~HCV Exposure/Selection (OR=2)"
+  myModel <- '
+      HCV_Clearance ~ 0*SNP
+      Selection_HCV_Exposure ~ log(2)*U1 + 0*HCV_Clearance
+      U1 ~ 0.1*SNP
+    '
+  } else if(U1_Exposure_OR==1.2) {
+  scenario="U1~HCV Exposure/Selection (OR=1.2)"
+  myModel <- '
+      HCV_Clearance ~ 0*SNP
+      Selection_HCV_Exposure ~ log(1.2)*U1 + 0*HCV_Clearance
+      U1 ~ 0.1*SNP
+    '
+  } else {print("Not a valid 'U1_Exposure_OR' option, can be OR: 1.2, 2")}
+  set.seed=seed
+  x<-simulateData(myModel, sample.nobs=N,seed=seed)
+  x$U1<-scale(x$U1)
+  x$Selection_HCV_Exposure_obs<-ifelse(rank(x$Selection_HCV_Exposure,ties.method = "random")<=((1-exposure_prevalence)*nrow(x)),0,1)
+  x$HCV_Clearance_obs<-ifelse(rank(x$HCV_Clearance,ties.method = "random")<=(clearance_prevalence*nrow(x)),0,1)
+  x$case<-ifelse(x$Selection_HCV_Exposure_obs==1 & x$HCV_Clearance_obs==1,1,0)
+  # genotype sim
+  p=MAF;q=(1-p)
+  genotype<-sample.int(n = 3, cohort_size,replace=T,prob = c((q^2),(2*p*q),(p^2)))-1
+  x<-x[order(x$SNP),]
+  x$SNP_obs<-sort(genotype)
+  # take 10,000 cases, the matching 10,000 exposed controls, 100k shared controls
+  x_cases<-x[x$case==1,]
+  x_cases<-x_cases[sample.int(nrow(x_cases), N_cases,replace=F),]
+  x_exposed_controls<-x[x$Selection_HCV_Exposure_obs==1 & x$HCV_Clearance_obs==0,]
+  x_exposed_controls<-x_exposed_controls[sample.int(nrow(x_exposed_controls), N_exposed_controls,replace=F),]
+  x_shared_controls<-x[x$case==0,]
+  x_shared_controls<-x_shared_controls[sample.int(nrow(x_shared_controls), N_shared,replace=F),]
+  # matrices for the fast logistic regressions
+  outcome_exposed<-rbindlist(list(x_cases,x_exposed_controls))$case
+  matrix_exposed = cbind(intercept = 1, SNP_obs = rbindlist(list(x_cases,x_exposed_controls))$SNP_obs)
+  outcome_shared<-rbindlist(list(x_cases,x_shared_controls))$case
+  matrix_shared = cbind(intercept = 1, SNP_obs = rbindlist(list(x_cases,x_shared_controls))$SNP_obs)
+  #regressions:
+  cases_shared<-glm_logistic(x=matrix_shared[,2],y=outcome_shared,full=TRUE)$info[2,]
+  cases_exposed<-glm_logistic(x=matrix_exposed[,2],y=outcome_exposed,full=TRUE)$info[2,]
+  results$exposed[1,]<-c(as.numeric(cases_exposed),paste0("HCV exposure prevalence: ",exposure_prevalence),"exposed")
+  results$shared[1,]<-c(as.numeric(cases_shared),paste0("HCV exposure prevalence: ",exposure_prevalence),"shared")
+  return(rbindlist(results))
+}
+ptm <- proc.time()
+get_results_scenario2(cohort_size = 500000,prevalence = 0.05,clearance_prevalence = 0.5,U1_Exposure_OR=2,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123)
+proc.time() - ptm
+# ~0.65 seconds
+#
+# for 100 iterations:
+#microbenchmark(get_results_scenario2(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
+# Unit: milliseconds
+#      min       lq     mean   median       uq      max neval
+# 534.8695 561.6318 645.5026 695.7994 715.0354 753.1448   100
+#
+#
+###################################################
+### --- Scenario 3: Variable HCV clearance rate ###
+###################################################
+#
+get_results_scenario3<-function(cohort_size,clearance_prevalence,U1_Exposure_OR,prevalence,N_cases,N_exposed_controls,N_shared,MAF,seed){
+  N=cohort_size
+  clearance_prevalence=clearance_prevalence
+  exposure_prevalence<-prevalence
+  #setup output:
+  exposed <- data.frame(matrix(NA, nrow = 1, ncol = 6))
+  colnames(exposed)<-c("Estimate","Std. Error","z value","Pr(>|z|)","scenario","controls")
+  shared <- data.frame(matrix(NA, nrow = 1, ncol = 6))
+  colnames(shared)<-c("Estimate","Std. Error","z value","Pr(>|z|)","scenario","controls")
+  results<-list(shared,exposed)
+  names(results)<-c("shared","exposed")
+  # simulate data
+  if(U1_Exposure_OR==2){
+  scenario="U1~HCV Exposure/Selection (OR=2)"
+  myModel <- '
+      HCV_Clearance ~ 0*SNP
+      Selection_HCV_Exposure ~ log(2)*U1 + 0*HCV_Clearance
+      U1 ~ 0.1*SNP
+    '
+  } else if(U1_Exposure_OR==1.2) {
+  scenario="U1~HCV Exposure/Selection (OR=1.2)"
+  myModel <- '
+      HCV_Clearance ~ 0*SNP
+      Selection_HCV_Exposure ~ log(1.2)*U1 + 0*HCV_Clearance
+      U1 ~ 0.1*SNP
+    '
+  } else {print("Not a valid 'U1_Exposure_OR' option, can be OR: 1.2, 2")}
+  set.seed=seed
+  x<-simulateData(myModel, sample.nobs=N,seed=seed)
+  x$U1<-scale(x$U1)
+  x$Selection_HCV_Exposure_obs<-ifelse(rank(x$Selection_HCV_Exposure,ties.method = "random")<=((1-exposure_prevalence)*nrow(x)),0,1)
+  x$HCV_Clearance_obs<-ifelse(rank(x$HCV_Clearance,ties.method = "random")<=(clearance_prevalence*nrow(x)),0,1)
+  x$case<-ifelse(x$Selection_HCV_Exposure_obs==1 & x$HCV_Clearance_obs==1,1,0)
+  # genotype sim
+  p=MAF;q=(1-p)
+  genotype<-sample.int(n = 3, cohort_size,replace=T,prob = c((q^2),(2*p*q),(p^2)))-1
+  x<-x[order(x$SNP),]
+  x$SNP_obs<-sort(genotype)
+  # take 10,000 cases, the matching 10,000 exposed controls, 100k shared controls
+  x_cases<-x[x$case==1,]
+  x_cases<-x_cases[sample.int(nrow(x_cases), N_cases,replace=F),]
+  x_exposed_controls<-x[x$Selection_HCV_Exposure_obs==1 & x$HCV_Clearance_obs==0,]
+  x_exposed_controls<-x_exposed_controls[sample.int(nrow(x_exposed_controls), N_exposed_controls,replace=F),]
+  x_shared_controls<-x[x$case==0,]
+  x_shared_controls<-x_shared_controls[sample.int(nrow(x_shared_controls), N_shared,replace=F),]
+  # matrices for the fast logistic regressions
+  outcome_exposed<-rbindlist(list(x_cases,x_exposed_controls))$case
+  matrix_exposed = cbind(intercept = 1, SNP_obs = rbindlist(list(x_cases,x_exposed_controls))$SNP_obs)
+  outcome_shared<-rbindlist(list(x_cases,x_shared_controls))$case
+  matrix_shared = cbind(intercept = 1, SNP_obs = rbindlist(list(x_cases,x_shared_controls))$SNP_obs)
+  #regressions:
+  cases_shared<-glm_logistic(x=matrix_shared[,2],y=outcome_shared,full=TRUE)$info[2,]
+  cases_exposed<-glm_logistic(x=matrix_exposed[,2],y=outcome_exposed,full=TRUE)$info[2,]
+  results$exposed[1,]<-c(as.numeric(cases_exposed),paste0("HCV clearance rate: ",clearance_prevalence),"exposed")
+  results$shared[1,]<-c(as.numeric(cases_shared),paste0("HCV clearance rate: ",clearance_prevalence),"shared")
+  return(rbindlist(results))
+}
+ptm <- proc.time()
+get_results_scenario3(cohort_size = 500000,prevalence = 0.25,clearance_prevalence = 0.2,U1_Exposure_OR=2,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123)
+proc.time() - ptm
+# ~0.65 seconds
+#microbenchmark(get_results_scenario3(cohort_size = 500000,U1_Exposure_OR = 2,prevalence = 0.25,clearance_prevalence = 0.5,N_cases = 10000,N_exposed_controls = 10000,N_shared = 100000,MAF=0.15,seed = 123),times=100)
+# Unit: milliseconds
+#      min       lq     mean   median       uq      max neval
+# 502.5809 557.6602 650.8094 705.7689 730.0042 768.5732   100
+##############################################################################
+##############################################################################
+# 20k Cases, 20k HCV Exposed Controls, 200k (1:10) Shared controls
+##############################################################################
+##############################################################################
+#qrsh -pe local 40 -l mem_free=2G,h_vmem=2G,h_fsize=500G
+cd ~/Data/idpopcontrols/simulation/sims_20kcases/
+# N=500k iterations per strata:
+detectCores() #local=12, 256 on cluster
+# cluster:
+# scenario 1: OR=1, 1.2, 2
+cl <- makeCluster(40,methods=F,autoStop = T)
+# local:
+cl <- makeCluster(round(detectCores()/2),methods=F,autoStop = T)
+#
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(20,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(20,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_or1 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(cohort_size = 1000000,
+                                    U1_Exposure_OR = 0, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#timing: 25219.039 seconds
+################################################################################
+#save(scenario1_or1,scenario1_or1_2,scenario1_or2,file="scenario1_at_scale.R") #
+#save(scenario1_or1,scenario1_or1_2,scenario1_or2,file="scenario1_20k_at_scale.R") #
+################################################################################
+################################################
+# Scenario 2: Variable HCV Exposure prevalence #
+################################################
+# 5% prevalence, OR=2
+cl <- makeCluster(20,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev05_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.05,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev05_OR2,file="scenario2_at_scale_Prevalence_05_OR_2.R")
+#save(scenario2_prev05_or2,file="scenario2_20k_at_scale_Prevalence_05_OR_2.R")
+# 5% prevalence, OR=1.2
+cl <- makeCluster(20,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev05_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.05,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev05_or1_2,file="scenario2_at_scale_Prevalence_05_OR_1_2.R")
+#save(scenario2_prev05_or1_2,file="scenario2_20k_at_scale_Prevalence_05_OR_1_2.R")
+# 25% prevalence, OR=2
+cl <- makeCluster(20,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev25_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev25_or2,file="scenario2_at_scale_Prevalence_25_OR_2.R")
+#save(scenario2_prev25_or2,file="scenario2_20k_at_scale_Prevalence_25_OR_2.R")
+# note: changed the names, screen 126... the correct OR2 was saved
+# 25% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev25_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev25_or1_2,file="scenario2_at_scale_Prevalence_25_OR_1_2.R")
+#save(scenario2_prev25_or1_2,file="scenario2_20k_at_scale_Prevalence_25_OR_1_2.R")
+# 50% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev50_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.50,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev50_or2,file="scenario2_at_scale_Prevalence_50_OR_2.R")
+#save(scenario2_prev50_or2,file="scenario2_20k_at_scale_Prevalence_50_OR_2.R")
+# 50% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev50_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.50,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev50_or1_2,file="scenario2_at_scale_Prevalence_50_OR_1_2.R")
+#save(scenario2_prev50_or1_2,file="scenario2_20k_at_scale_Prevalence_50_OR_1_2.R")
+# 75% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev75_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.75,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev75_or2,file="scenario2_at_scale_Prevalence_75_OR_2.R")
+#save(scenario2_prev75_or2,file="scenario2_20k_at_scale_Prevalence_75_OR_2.R")
+# 75% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev75_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.75,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev75_or1_2,file="scenario2_at_scale_Prevalence_75_OR_1_2.R")
+#save(scenario2_prev75_or1_2,file="scenario2_20k_at_scale_Prevalence_75_OR_1_2.R")
+# 100% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev100_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 1,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev100_or2,file="scenario2_at_scale_Prevalence_100_OR_2.R")
+#save(scenario2_prev100_or2,file="scenario2_20k_at_scale_Prevalence_100_OR_2.R")
+# 100% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev100_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 1,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev100_or1_2,file="scenario2_at_scale_Prevalence_100_OR_1_2.R")
+#save(scenario2_prev100_or1_2,file="scenario2_20k_at_scale_Prevalence_100_OR_1_2.R")
+stopCluster(cl)
+#
+#
+# local for 100 replicates: 16 seconds
+# local for 1000 replicates: 151.4 seconds
+# cluster for 1000 replicates: 20 cores=48.597 seconds
+# 7 hours for ~500k replicates
+###########################################
+# Scenario 3: Variable HCV Clearance Rate #
+###########################################
+# 20% clearance rate, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance20_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.20,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance20_or2,file="scenario3_at_scale_Clearance_20_OR_2.R")
+save(scenario3_clearance20_or2,file="scenario3_20k_at_scale_Clearance_20_OR_2.R")
+# note: changed the names, screen 126... the correct OR2 was saved
+# 20% clearance rate, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance20_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.20,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance20_or1_2,file="scenario3_at_scale_Clearance_20_OR_1_2.R")
+save(scenario3_clearance20_or1_2,file="scenario3_20k_at_scale_Clearance_20_OR_1_2.R")
+# 50% clearance rate, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance50_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.50,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance50_or2,file="scenario3_at_scale_Clearance_50_OR_2.R")
+#save(scenario3_clearance50_or2,file="scenario3_20k_at_scale_Clearance_50_OR_2.R")
+# 50% clearance rate, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance50_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.50,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance50_or1_2,file="scenario3_at_scale_Clearance_50_OR_1_2.R")
+#save(scenario3_clearance50_or1_2,file="scenario3_20k_at_scale_Clearance_50_OR_1_2.R")
+# 80% clearance rate, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance80_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.80,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance80_or2,file="scenario3_at_scale_Clearance_80_OR_2.R")
+save(scenario3_clearance80_or2,file="scenario3_20k_at_scale_Clearance_80_OR_2.R")
+# 80% clearance rate, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance80_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.80,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance80_or1_2,file="scenario3_at_scale_Clearance_80_OR_1_2.R")
+#save(scenario3_clearance80_or1_2,file="scenario3_20k_at_scale_Clearance_80_OR_1_2.R")
+##############################################################################################
+##############################################################################################
+##############################################################################################
+##############################################################################################
+#########------ 20k Cases, 20k HCV Exposed Controls, 20k (1:1) Shared controls ------#########
+##############################################################################################
+##############################################################################################
+#qrsh -pe local 40 -l mem_free=2G,h_vmem=2G,h_fsize=500G
+setwd("~/Data/idpopcontrols/simulation/sims_20kall/")
+# N=500k iterations per strata:
+detectCores() #local=12, 256 on cluster
+# cluster:
+# scenario 1: OR=1, 1.2, 2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(20,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_or1 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(cohort_size = 1000000,
+                                    U1_Exposure_OR = 0, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+################################################################################
+#save(scenario1_or1,scenario1_or1_2,scenario1_or2,file="scenario1_20kall_at_scale.R") #
+# scenario 1: screen -r 8916
+################################################################################
+setwd("~/Data/idpopcontrols/simulation/sims_20kall")
+################################################
+# Scenario 2: Variable HCV Exposure prevalence #
+################################################
+# 5% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev05_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.05,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev05_or2,file="scenario2_20kall_at_scale_Prevalence_05_OR_2.R")
+# 5% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev05_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.05,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev05_or1_2,file="scenario2_20kall_at_scale_Prevalence_05_OR_1_2.R")
+# 25% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev25_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev25_or2,file="scenario2_20kall_at_scale_Prevalence_25_OR_2.R")
+# 25% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev25_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev25_or1_2,file="scenario2_20kall_at_scale_Prevalence_25_OR_1_2.R")
+# 50% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev50_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.50,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev50_or2,file="scenario2_20kall_at_scale_Prevalence_50_OR_2.R")
+# 50% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev50_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.50,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+save(scenario2_prev50_or1_2,file="scenario2_20kall_at_scale_Prevalence_50_OR_1_2.R")
+####
+# ^^ since scenario 1: all on screen -r 10
+#
+#
+#
+####
+# 75% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev75_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.75,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev75_or2,file="scenario2_20kall_at_scale_Prevalence_75_OR_2.R")
+# 75% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev75_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.75,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev75_or1_2,file="scenario2_20kall_at_scale_Prevalence_75_OR_1_2.R")
+# 100% prevalence, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev100_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 1,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev100_or2,file="scenario2_20kall_at_scale_Prevalence_100_OR_2.R")
+# 100% prevalence, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario2")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario2_prev100_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario2(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 1,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario2_prev100_or1_2,file="scenario2_20kall_at_scale_Prevalence_100_OR_1_2.R")
+stopCluster(cl)
+#
+###########################################
+# Scenario 3: Variable HCV Clearance Rate #
+###########################################
+# 20% clearance rate, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance20_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.20,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance20_or2,file="scenario3_20kall_at_scale_Clearance_20_OR_2.R")
+# 20% clearance rate, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance20_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.20,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance20_or1_2,file="scenario3_20kall_at_scale_Clearance_20_OR_1_2.R")
+#####
+# ^ screen -r 11228
+#
+# 50% clearance rate, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance50_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.50,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance50_or2,file="scenario3_20kall_at_scale_Clearance_50_OR_2.R")
+# 50% clearance rate, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance50_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.50,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance50_or1_2,file="scenario3_20kall_at_scale_Clearance_50_OR_1_2.R")
+# 80% clearance rate, OR=2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance80_or2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.80,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance80_or2,file="scenario3_20kall_at_scale_Clearance_80_OR_2.R")
+# 80% clearance rate, OR=1.2
+cl <- makeCluster(40,methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario3")); clusterEvalQ(cl, require(lavaan)); clusterEvalQ(cl, require(data.table)) ;clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario3_clearance80_or1_2 <- foreach(i = 1:500000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario3(cohort_size = 1000000,
+                                    U1_Exposure_OR = 1.2, #<---- can alter this, 1.2, 2
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.80,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 20000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#save(scenario3_clearance80_or1_2,file="scenario3_20kall_at_scale_Clearance_80_OR_1_2.R")
+###############################################################################################
+###############################################################################################
+###############################################################################################
+#### --- summarize results, plots etc. --- ####
+# 20k cases, 20k hcv exposed controls, 200k (1:10) shared controls
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20k_cases")
+# 20k cases, 20k hcv exposed controls, 20k (1:1) shared controls
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20kall")
+#
+# Scenario 1
+options(stringsAsFactors=F)
+library(data.table);library(ggplot2);library(dplyr);library(plyr)
+##########################################################
+load("scenario1_20k_at_scale.R") #<-- 1:10 ratio
+load("scenario1_20kall_at_scale.R") #<-- 1:1 ratio
+##########################################################
+clearance_snp_combined<-rbind(scenario1_or2,scenario1_or1_2,scenario1_or1)
+#--
+clearance_snp_combined$Estimate<-as.numeric(clearance_snp_combined$Estimate)
+clearance_snp_combined$'Std. Error'<-as.numeric(clearance_snp_combined$'Std. Error')
+clearance_snp_combined$'z value'<-as.numeric(clearance_snp_combined$'z value')
+clearance_snp_combined$'Pr(>|z|)'<-as.numeric(clearance_snp_combined$'Pr(>|z|)')
+#
+# ignore suggestive significance
+clearance_snp_combined$psig<-ifelse(clearance_snp_combined$`Pr(>|z|)`<=5e-8,"P<5e-8","Non-significant")
+#--
+library(plyr)
+sumdat<-ddply(clearance_snp_combined, c("scenario","controls"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_SD = mean(sd(exp(Estimate))),
+           PropSig=as.numeric(prop.table(table(`Pr(>|z|)`<5e-8))['TRUE'])*100)
+#
+clearance_snp_combined$subgroup<-paste0(clearance_snp_combined$scenario,clearance_snp_combined$controls)
+table(clearance_snp_combined$subgroup,clearance_snp_combined$psig)
+#
+# just power, or difference in observed ORs
+sumdat_20vs20<-sumdat
+#                            scenario controls      N  mean_OR
+#    U1~HCV Exposure/Selection (OR=1)  exposed 500000 1.000161
+#    U1~HCV Exposure/Selection (OR=1)   shared 500000 1.000182
+#  U1~HCV Exposure/Selection (OR=1.2)  exposed 500000 1.000170
+#  U1~HCV Exposure/Selection (OR=1.2)   shared 500000 1.040503
+#    U1~HCV Exposure/Selection (OR=2)  exposed 500000 1.000148
+#    U1~HCV Exposure/Selection (OR=2)   shared 500000 1.132697
+sumdat_20vs200<-sumdat
+scenario controls      N  mean_OR
+#   U1~HCV Exposure/Selection (OR=1)  exposed 500000 1.000161
+#   U1~HCV Exposure/Selection (OR=1)   shared 500000 1.000040
+# U1~HCV Exposure/Selection (OR=1.2)  exposed 500000 1.000170
+# U1~HCV Exposure/Selection (OR=1.2)   shared 500000 1.040337
+#   U1~HCV Exposure/Selection (OR=2)  exposed 500000 1.000148
+#   U1~HCV Exposure/Selection (OR=2)   shared 500000 1.132308
+t.test(sumdat_20vs200$mean_OR,sumdat_20vs20$mean_OR,paired = T)
+# paired t-test, P>0.05
+
+#--------------------------------------------------------------------------------#
+clearance_snp_combined$approach_scenario<-ifelse(clearance_snp_combined$controls=="shared","1A: Shared Controls","1B: HCV Exposed Controls")
+# scenario 1A- plot of observed OR + pvalues
+#
+library(MetBrewer)
+scenario_1a_shared_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="1A: Shared Controls",],aes(x=Estimate,y=scenario, fill=scenario)) +
+  geom_boxplot()  + theme_bw() + theme(legend.position="none")+
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=6,type="continuous")[3:1])) + theme(axis.line=element_line()) +
+  scale_y_discrete(limits=c("U1~HCV Exposure/Selection (OR=2)","U1~HCV Exposure/Selection (OR=1.2)","U1~HCV Exposure/Selection (OR=1)"), labels = rev(c("U1~HCV Exposure/Selection (OR=1)" = "No Association:\nU1~Pathogen Exposure (OR=1)","U1~HCV Exposure/Selection (OR=1.2)" = "Moderate Association:\nU1~Pathogen Exposure (OR=1.2)", "U1~HCV Exposure/Selection (OR=2)" = "Strong Association:\nU1~Pathogen Exposure (OR=2)")))
+scenario_1a_shared_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="1A: Shared Controls",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+      scale_y_discrete(limits=c("U1~HCV Exposure/Selection (OR=2)","U1~HCV Exposure/Selection (OR=1.2)","U1~HCV Exposure/Selection (OR=1)")) + theme(axis.text.y=element_blank())
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+png("scenario_1a_20k_cases_200k_shared_controls_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+#png("scenario_1a_20k_cases_20k_shared_controls_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_1a_shared_controls,scenario_1a_shared_sig, bottom=bottom,ncol=2,widths=c(0.5, 0.5))
+dev.off()
+#
+#library(svglite)
+#svglite("scenario_1a_20k_cases_20k_shared_controls.svg",width = 10, height = 5)
+#  grid.arrange(scenario_1a_shared_controls,scenario_1a_shared_sig, bottom=bottom,ncol=2,widths=c(0.5, 0.5))
+#dev.off()
+#
+#########################
+# proportion GWAS sig replicates?
+# 20k vs. 20k:
+# no assoc: 0/500k (0%)
+# moderate: 159/500k (0.000318) (0.03%)
+# strong: 410503/500k (0.821006) (82.2%)
+#########################
+# 20k vs. 200k:
+# no assoc: 0/500k (0%)
+# moderate: 1792/500k (0.003584) (0.36%)
+# strong: 499666/500k (0.999332) (99.93%)
+#########################
+# scenario 1B- plot of observed OR + pvalues
+scenario_1b_exposed_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="1B: HCV Exposed Controls",],aes(x=Estimate,y=scenario, fill=scenario)) +
+  geom_boxplot()  + theme_bw() + theme(legend.position="none")+
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=6,type="continuous")[3:1])) + theme(axis.line=element_line()) +
+  scale_y_discrete(limits=c("U1~HCV Exposure/Selection (OR=2)","U1~HCV Exposure/Selection (OR=1.2)","U1~HCV Exposure/Selection (OR=1)"), labels = rev(c("U1~HCV Exposure/Selection (OR=1)" = "No Association:\nU1~Pathogen Exposure (OR=1)","U1~HCV Exposure/Selection (OR=1.2)" = "Moderate Association:\nU1~Pathogen Exposure (OR=1.2)", "U1~HCV Exposure/Selection (OR=2)" = "Strong Association:\nU1~Pathogen Exposure (OR=2)")))
+scenario_1b_exposed_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="1B: HCV Exposed Controls",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+      scale_y_discrete(limits=c("U1~HCV Exposure/Selection (OR=2)","U1~HCV Exposure/Selection (OR=1.2)","U1~HCV Exposure/Selection (OR=1)")) + theme(axis.text.y=element_blank())
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+#png("scenario_1b_20k_cases_200k_shared_controls_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+png("scenario_1b_20k_cases_20k_exposed_controls_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_1b_exposed_controls,scenario_1b_exposed_sig, bottom=bottom,ncol=2,widths=c(0.5, 0.5))
+dev.off()
+#
+# Comparison between scenarios - exposed vs. exposed | shared vs. shared
+# for label:
+clearance_snp_combined$label<-""
+clearance_snp_combined$label_pos<-""
+clearance_snp_combined$welch_t<-""
+clearance_snp_combined$wilcox<-""
+#
+library(plyr)
+# for z scores etc. use absolute values
+sumdat<-ddply(clearance_snp_combined, c("scenario","controls"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_beta=mean(Estimate),
+           mean_SE = mean(`Std. Error`),
+           mean_beta_abs=mean(abs(Estimate)),
+           mean_SE_abs = mean(abs(`Std. Error`)),
+           PropSig=prop.table(table(`Pr(>|z|)`<5e-8))['TRUE'])
+#
+zcomps<-as.list(unique(clearance_snp_combined$scenario))
+#
+# for Z score based comparisons of regression coefficients (-->why the square root of std.errors) - https://stats.stackexchange.com/questions/93540/testing-equality-of-coefficients-from-two-different-regressions
+# Clogg, C. C., Petkova, E., & Haritou, A. (1995). Statistical Methods for Comparing Regression Coefficients Between Models. American Journal of Sociology, 100(5), 1261–1293. https://doi.org/10.1086/230638
+# -- also explicitly discussed in:
+# PATERNOSTER, R., BRAME, R., MAZEROLLE, P., & PIQUERO, A. (1998). USING THE CORRECT STATISTICAL TEST FOR THE EQUALITY OF REGRESSION COEFFICIENTS. Criminology, 36(4), 859–866. https://doi.org/10.1111/j.1745-9125.1998.tb01268.x
+# supposedly also improves comparisons from cohorts involving large differences in sample sizes
+for(i in 1:length(unique(sumdat$scenario))){
+  scenario_i<-unique(sumdat$scenario)[i]
+  beta_num<-sumdat[sumdat$scenario==scenario_i & sumdat$controls=="shared",]$mean_beta-sumdat[sumdat$scenario==scenario_i & sumdat$controls=="exposed",]$mean_beta
+  se_beta_denom<-sqrt(sumdat[sumdat$scenario==scenario_i & sumdat$controls=="shared",]$mean_SE^2 + sumdat[sumdat$scenario==scenario_i & sumdat$controls=="exposed",]$mean_SE^2)
+  zscore<-beta_num/se_beta_denom
+  pval<-2*pnorm(q=abs(zscore), lower.tail=FALSE)
+  # save things
+  names(zcomps)[i]<-scenario_i
+  zcomps[[i]]<-c(zscore,pval)
+  clearance_snp_combined[clearance_snp_combined$scenario==scenario_i,]$label<-pval
+  clearance_snp_combined[clearance_snp_combined$scenario==scenario_i,]$label_pos<-max(clearance_snp_combined[clearance_snp_combined$scenario==scenario_i,]$Estimate)
+  wilcox<-wilcox.test(clearance_snp_combined[clearance_snp_combined$scenario==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$scenario==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  welch_t<-t.test(clearance_snp_combined[clearance_snp_combined$scenario==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$scenario==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  clearance_snp_combined[clearance_snp_combined$scenario==scenario_i,]$welch_t<-welch_t$p.value
+  clearance_snp_combined[clearance_snp_combined$scenario==scenario_i,]$wilcox<-wilcox$p.value
+}
+clearance_snp_combined$label<-as.numeric(clearance_snp_combined$label)
+clearance_snp_combined$label_pos<-as.numeric(clearance_snp_combined$label_pos)
+#
+# recode controls label:
+clearance_snp_combined$controls<-gsub("shared","Population-Based Controls",clearance_snp_combined$controls)
+clearance_snp_combined$controls<-gsub("exposed","Well-Characterized Controls",clearance_snp_combined$controls)
+#
+table(clearance_snp_combined$controls)
+# generalizable version:
+clearance_snp_combined$scenario2<-gsub("HCV Exposure/Selection","Pathogen Exposure",clearance_snp_combined$scenario)
+#
+scenario_1_full_comparison_wPval<-ggplot(clearance_snp_combined,aes(x=exp(Estimate),y=controls, fill=controls)) + facet_wrap(.~scenario2,scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  # in-house Z test, rather use wilcoxian rank-sum
+  #geom_text(data=clearance_snp_combined[clearance_snp_combined$controls=="shared",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4.5) +
+  geom_text(data=clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4.5) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+#png("scenario_1_20k_Exposed_vs_200k_Shared_controls_pval_generalizable.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+png("scenario_1_20k_Exposed_vs_20k_Shared_controls_pval_generalizable.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  scenario_1_full_comparison_wPval
+dev.off()
+###########################################
+########## Figure for manuscript:##########
+library(dplyr)
+cases_v_20kpopcontrols<-clearance_snp_combined
+cases_v_20kpopcontrols$n_common<-20000
+cases_v_20kpopcontrols_sub<-cases_v_20kpopcontrols %>% group_by(subgroup) %>% sample_n(1000) #for testing
+#
+cases_v_200kpopcontrols<-clearance_snp_combined
+cases_v_200kpopcontrols$n_common<-200000
+cases_v_200kpopcontrols_sub<-cases_v_200kpopcontrols %>% group_by(subgroup) %>% sample_n(1000) #for testing
+#
+library(gridExtra);library(grid)
+top_20k <- textGrob("Cases vs. 20,000 Population-based controls", gp = gpar(fontsize = 15))
+scenario1_20k_controls<-ggplot(cases_v_20kpopcontrols,aes(x=exp(Estimate),y=controls, fill=controls)) + facet_wrap(.~scenario2,scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=cases_v_20kpopcontrols[cases_v_20kpopcontrols$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4.5) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#grid.arrange(scenario1_20k_controls, top=top_20k)
+#
+top_200k <- textGrob("Cases vs. 200,000 Population-based controls", gp = gpar(fontsize = 15))
+scenario1_200k_controls<-ggplot(cases_v_200kpopcontrols,aes(x=exp(Estimate),y=controls, fill=controls)) + facet_wrap(.~scenario2,scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=cases_v_200kpopcontrols[cases_v_200kpopcontrols$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4.5) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#grid.arrange(scenario1_200k_controls, top=top_200k)
+#
+############## FOR MANUSCRIPT #############
+png("../scenario_1_20k_v_200k_controls_pval_comparisons.png",type="cairo",width = 12, height = 6, units= 'in', res=1000)
+grid.arrange(top_20k,top_200k,
+             scenario1_20k_controls,scenario1_200k_controls,
+             ncol=2,heights=c(0.05,0.95))
+dev.off()
+############################################
+#
+# alternative figure - distribution of effect sizes w/ pvals
+library(ggridges);library(viridis);library(hrbrthemes);library(ggstance)
+#png("scenario_1_20k_Exposed_vs_200k_Shared_controls_pval_ggridge.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+png("scenario_1_20k_Exposed_vs_20k_Shared_controls_pval_ggridge.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+ggplot(clearance_snp_combined, aes(x = Estimate, y = scenario, fill = controls)) +
+geom_density_ridges(alpha=0.75, scale = 0.9, jittered_points = F, position = position_points_jitter(width = 0.05, height = 0),
+    point_shape = '|', point_size = 3, point_alpha = 0.5) +
+    geom_vline(xintercept=0, linetype="dotted",size=1.25) +
+    geom_text(aes(x=label_pos, y=scenario, vjust=1.5,hjust=2, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4.5) +
+    scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+    guides(colour="none") +
+    theme_ipsum() + labs(y=NULL, x="Beta Estimate (SNP~HCV Clearance)") +
+    ylim(c("U1~HCV Exposure/Selection (OR=2)","U1~HCV Exposure/Selection (OR=1.2)","U1~HCV Exposure/Selection (OR=1)")) +
+    theme(legend.position="bottom",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)) +
+    theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+####################################################################################################
+# alternative comparison betwen shared/exposed aside from Z score based on averaged Beta estimates #
+####################################################################################################
+# OR=1 #
+# Wilcoxon rank sum test
+wilcox.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="shared",]$Estimate)
+#p-value = 0.6591
+# Welch 2 Sample t-test:
+t.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="shared",]$Estimate)
+# p-value = 0.3635
+##########
+# OR=1.2 #
+wilcox.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="shared",]$Estimate)
+#p-value = < 2.2e-16
+t.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="shared",]$Estimate)
+#p-value < 2.2e-16
+##########
+# OR=2 #
+wilcox.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="shared",]$Estimate)
+#p-value < 2.2e-16
+t.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="shared",]$Estimate)
+#p-value < 2.2e-16
+# Anderson-Darling tests
+library(kSamples) #Are the beta estimates derived from different distributions? #https://stats.stackexchange.com/questions/35461/is-there-a-multiple-sample-version-or-alternative-to-the-kolmogorov-smirnov-test
+scenario1_or1_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+scenario1_or1_2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+scenario1_or2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+# use these pvalues?
+
+###############################################################################################################################################################################################################
+# Heterogeneity tests # <-- performed for analyses using 20k cases vs. 200k controls
+### bootstrap-based heterogeneity test for between-study heterogneity in meta analysis : https://cran.r-project.org/web/packages/boot.heterogeneity/vignettes/boot.heterogeneity.html
+# Add N cases/controls
+clearance_snp_combined$subgroup<-paste0(clearance_snp_combined$controls,", ",clearance_snp_combined$scenario)
+clearance_snp_combined$cases_N<-20000
+clearance_snp_combined$controls_N<-ifelse(clearance_snp_combined$controls=="shared",200000,20000)
+clearance_snp_combined$N_effective<-(4/((1/clearance_snp_combined$cases_N) + (1/(clearance_snp_combined$controls_N))))
+#
+#
+library(meta)
+# metagen - when using ORs, don't exponentiate the beta estimate
+# ORs X control type:
+library(dplyr)
+set.seed=54321
+dat_subgroup <- clearance_snp_combined %>% group_by(subgroup) %>% sample_n(1000) #1k each
+control_type_and_U1scenario<-metagen(TE=dat_subgroup$Estimate, seTE=dat_subgroup$`Std. Error`,
+        studlab=dat_subgroup$subgroup,
+        subgroup=dat_subgroup$subgroup,
+        pval=dat_subgroup$`Pr(>|z|)`,
+        sm="OR", method.ci ="z",
+        n.e=dat_subgroup$cases_N, n.c=dat_subgroup$controls_N,
+        overall.hetstat=T,label.e="HCV Clearance", label.c="Controls",
+        test.subgroup=T,method.tau = "ML", print.subgroup.name=TRUE, warn=TRUE)
+#save(control_type_and_U1scenario, file="Metaanalysis_Heterogeneity_Results_Scenario1_20kcases_3kSubsample.R")
+save(control_type_and_U1scenario, file="Metaanalysis_Heterogeneity_Results_Scenario1_1kSubsample.R")
+#
+Test of heterogeneity:
+        Q d.f. p-value
+ 61737.78 5999       0
+Results for subgroups (random effects model):
+                                                  k     OR           95%-CI
+subgroup = exposed, U1~HCV Exposure/Select ... 1000 0.9999 [0.9987; 1.0011]
+subgroup = exposed, U1~HCV Exposure/Select ... 1000 1.0004 [0.9991; 1.0016]
+subgroup = exposed, U1~HCV Exposure/Select ... 1000 1.0003 [0.9991; 1.0015]
+subgroup = shared, U1~HCV Exposure/Selecti ... 1000 1.0000 [0.9991; 1.0010]
+subgroup = shared, U1~HCV Exposure/Selecti ... 1000 1.0408 [1.0398; 1.0418]
+subgroup = shared, U1~HCV Exposure/Selecti ... 1000 1.1336 [1.1326; 1.1346]
+                                                 tau^2    tau
+subgroup = exposed, U1~HCV Exposure/Select ...       0      0
+subgroup = exposed, U1~HCV Exposure/Select ... <0.0001 0.0044
+subgroup = exposed, U1~HCV Exposure/Select ... <0.0001 0.0018
+subgroup = shared, U1~HCV Exposure/Selecti ...       0      0
+subgroup = shared, U1~HCV Exposure/Selecti ... <0.0001 0.0032
+subgroup = shared, U1~HCV Exposure/Selecti ... <0.0001 0.0019
+Test for subgroup differences (random effects model):
+                        Q d.f. p-value
+Between groups   54872.43    5       0
+# meta notes
+# common effects model: I^2
+# random effects model: Tau
+# I2='proportion of total variation in study estimates that is due to heterogeneity' -  Quantifying heterogeneity in a meta-analysis, doi.org/10.1002/sim.1186
+# Tau='between‐study variance component (τ^2)'
+# Tau estimation via maximum-likelihood: Viechtbauer, W. (2005). Bias and Efficiency of Meta-Analytic Variance Estimators in the Random-Effects Model. Journal of Educational and Behavioral Statistics, 30(3), 261–293. https://doi.org/10.3102/10769986030003261
+
+##################################################################################
+##################################################################################
+###########################-------- Scenario 2 --------###########################
+##################################################################################
+##################################################################################
+options(stringsAsFactors=F)
+library(data.table);library(ggplot2);library(dplyr);library(plyr);library(MetBrewer)
+########################################
+# 20k cases vs. 200k shared controls
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20k_cases")
+load("scenario2_20k_at_scale_Prevalence_05_OR_1_2.R")
+scenario2_prev05_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20k_at_scale_Prevalence_05_OR_2.R")
+scenario2_prev05_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20k_at_scale_Prevalence_25_OR_1_2.R")
+scenario2_prev25_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20k_at_scale_Prevalence_25_OR_2.R")
+scenario2_prev25_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20k_at_scale_Prevalence_50_OR_1_2.R")
+scenario2_prev50_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20k_at_scale_Prevalence_50_OR_2.R")
+scenario2_prev50_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20k_at_scale_Prevalence_75_OR_1_2.R")
+scenario2_prev75_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20k_at_scale_Prevalence_75_OR_2.R")
+scenario2_prev75_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20k_at_scale_Prevalence_100_OR_1_2.R")
+scenario2_prev100_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20k_at_scale_Prevalence_100_OR_2.R")
+scenario2_prev100_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+######################################
+# 20k cases vs. 20k shared controls
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20kall")
+load("scenario2_20kall_at_scale_Prevalence_05_OR_1_2.R")
+scenario2_prev05_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20kall_at_scale_Prevalence_05_OR_2.R")
+scenario2_prev05_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20kall_at_scale_Prevalence_25_OR_1_2.R")
+scenario2_prev25_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20kall_at_scale_Prevalence_25_OR_2.R")
+scenario2_prev25_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20kall_at_scale_Prevalence_50_OR_1_2.R")
+scenario2_prev50_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20kall_at_scale_Prevalence_50_OR_2.R")
+scenario2_prev50_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20kall_at_scale_Prevalence_75_OR_1_2.R")
+scenario2_prev75_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20kall_at_scale_Prevalence_75_OR_2.R")
+scenario2_prev75_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario2_20kall_at_scale_Prevalence_100_OR_1_2.R")
+scenario2_prev100_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario2_20kall_at_scale_Prevalence_100_OR_2.R")
+scenario2_prev100_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+#--
+clearance_snp_combined<-rbind(scenario2_prev05_or1_2,scenario2_prev05_or2,
+                              scenario2_prev25_or1_2,scenario2_prev25_or2,
+                              scenario2_prev50_or1_2,scenario2_prev50_or2,
+                              scenario2_prev75_or1_2,scenario2_prev75_or2,
+                              scenario2_prev100_or1_2,scenario2_prev100_or2)
+#--
+clearance_snp_combined$subgroup<-paste0(clearance_snp_combined$scenario,", ",clearance_snp_combined$u1,", ",clearance_snp_combined$controls)
+# subset just for sake of workflow development
+library(dplyr)
+clearance_snp_combined2<-clearance_snp_combined %>% group_by(subgroup) %>% sample_n(1000)
+#--
+clearance_snp_combined$Estimate<-as.numeric(clearance_snp_combined$Estimate)
+clearance_snp_combined$'Std. Error'<-as.numeric(clearance_snp_combined$'Std. Error')
+clearance_snp_combined$'z value'<-as.numeric(clearance_snp_combined$'z value')
+clearance_snp_combined$'Pr(>|z|)'<-as.numeric(clearance_snp_combined$'Pr(>|z|)')
+# extreme values, so end up with suggestive significance at both tails - just use GW sig
+clearance_snp_combined$psig<-ifelse(clearance_snp_combined$`Pr(>|z|)`<=5e-8,"P<5e-8","Non-significant")
+#--
+library(plyr)
+sumdat<-ddply(clearance_snp_combined, c("subgroup"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_SD = mean(sd(exp(Estimate))),
+           PropSig=as.numeric(prop.table(table(`Pr(>|z|)`<5e-8))['TRUE'])*100)
+#
+table(clearance_snp_combined$subgroup,clearance_snp_combined$psig)
+# just power, or difference in observed ORs
+sumdat_20vs20<-sumdat
+sumdat_20vs200<-sumdat
+all(sumdat_20vs20$subgroup==sumdat_20vs200$subgroup) #TRUE
+cor.test(sumdat_20vs20$mean_OR,sumdat_20vs200$mean_OR, alternative = "two.sided", method="spearman")
+no real difference- plot basically overlapping
+
+#--------------------------------------------------------------------------------#
+clearance_snp_combined$approach_scenario<-ifelse(clearance_snp_combined$controls=="shared","2A: Shared Controls","2B: HCV Exposed Controls")
+clearance_snp_combined$approach_scenario<-paste0(clearance_snp_combined$approach_scenario,", ",clearance_snp_combined$u1)
+# scenario 2A- plot of observed OR + pvalues
+clearance_snp_combined$prevalence_scenario <- factor(clearance_snp_combined$scenario, levels = c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1"))
+#
+# separate plots for each U1 scenario
+# make separate ones for each U1 scenario - Beta estiamtes + matching pvalue threshold plots, for final comparison plot, can include the shared vs. exposed controls graphs
+##########
+# OR=1.2 #
+##########
+scenario_2a_shared_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2A: Shared Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=prevalence_scenario, fill=prevalence_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=11,type="continuous")[5:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1"))
+  scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                            "HCV exposure prevalence: 0.25",
+                            "HCV exposure prevalence: 0.5",
+                            "HCV exposure prevalence: 0.75",
+                            "HCV exposure prevalence: 1"),
+                   labels = rev(c("HCV exposure prevalence: 0.05" = "Pathogen Exposure\nPrevalence: 5%",
+                                  "HCV exposure prevalence: 0.25" = "Pathogen Exposure\nPrevalence: 25%",
+                                  "HCV exposure prevalence: 0.5" = "Pathogen Exposure\nPrevalence: 50%",
+                                  "HCV exposure prevalence: 0.75" = "Pathogen Exposure\nPrevalence: 75%",
+                                  "HCV exposure prevalence: 1" = "Pathogen Exposure\nPrevalence: 100%")))
+#
+scenario_2a_shared_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2A: Shared Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+#      ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1")) + guides(fill="none") + theme(axis.text.y=element_blank())
+      scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                                "HCV exposure prevalence: 0.25",
+                                "HCV exposure prevalence: 0.5",
+                                "HCV exposure prevalence: 0.75",
+                                "HCV exposure prevalence: 1")) +
+      theme(axis.text.y=element_blank())
+#
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+#png("scenario_2a_20k_cases_200k_shared_controls_U1_OR1_2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+png("scenario_2a_20k_cases_20k_shared_controls_U1_OR1_2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_2a_shared_controls,scenario_2a_shared_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+########
+# OR=2 #
+########
+scenario_2a_shared_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2A: Shared Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=prevalence_scenario, fill=prevalence_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=11,type="continuous")[5:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1"))
+  scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                            "HCV exposure prevalence: 0.25",
+                            "HCV exposure prevalence: 0.5",
+                            "HCV exposure prevalence: 0.75",
+                            "HCV exposure prevalence: 1"),
+                   labels = rev(c("HCV exposure prevalence: 0.05" = "Pathogen Exposure\nPrevalence: 5%",
+                            "HCV exposure prevalence: 0.25" = "Pathogen Exposure\nPrevalence: 25%",
+                            "HCV exposure prevalence: 0.5" = "Pathogen Exposure\nPrevalence: 50%",
+                            "HCV exposure prevalence: 0.75" = "Pathogen Exposure\nPrevalence: 75%",
+                            "HCV exposure prevalence: 1" = "Pathogen Exposure\nPrevalence: 100%")))
+#
+scenario_2a_shared_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2A: Shared Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+#      ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1")) + guides(fill="none") + theme(axis.text.y=element_blank())
+      scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                                "HCV exposure prevalence: 0.25",
+                                "HCV exposure prevalence: 0.5",
+                                "HCV exposure prevalence: 0.75",
+                                "HCV exposure prevalence: 1")) +
+                       theme(axis.text.y=element_blank())
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+#png("scenario_2a_20k_cases_200k_shared_controls_U1_OR2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+png("scenario_2a_20k_cases_20k_shared_controls_U1_OR2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_2a_shared_controls,scenario_2a_shared_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+##############################################
+# scenario 2B- plot of observed OR + pvalues #
+scenario_2b_exposed_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=prevalence_scenario, fill=prevalence_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=11,type="continuous")[5:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1"))
+  scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                            "HCV exposure prevalence: 0.25",
+                            "HCV exposure prevalence: 0.5",
+                            "HCV exposure prevalence: 0.75",
+                            "HCV exposure prevalence: 1"),
+                   labels = rev(c("HCV exposure prevalence: 0.05" = "Pathogen Exposure\nPrevalence: 5%",
+                            "HCV exposure prevalence: 0.25" = "Pathogen Exposure\nPrevalence: 25%",
+                            "HCV exposure prevalence: 0.5" = "Pathogen Exposure\nPrevalence: 50%",
+                            "HCV exposure prevalence: 0.75" = "Pathogen Exposure\nPrevalence: 75%",
+                            "HCV exposure prevalence: 1" = "Pathogen Exposure\nPrevalence: 100%")))
+#
+scenario_2b_exposed_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+#      ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1")) + guides(fill="none") + theme(axis.text.y=element_blank())
+      scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                                "HCV exposure prevalence: 0.25",
+                                "HCV exposure prevalence: 0.5",
+                                "HCV exposure prevalence: 0.75",
+                                "HCV exposure prevalence: 1")) +
+                       theme(axis.text.y=element_blank())
+#
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+png("scenario_2b_20k_cases_20k_exposed_controls_U1_OR1_2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+#png("scenario_2b_20k_cases_20k_exposed_controls_U1_OR1_2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_2b_exposed_controls,scenario_2b_exposed_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+#
+scenario_2b_exposed_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=prevalence_scenario, fill=prevalence_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=11,type="continuous")[5:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1"))
+  scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                            "HCV exposure prevalence: 0.25",
+                            "HCV exposure prevalence: 0.5",
+                            "HCV exposure prevalence: 0.75",
+                            "HCV exposure prevalence: 1"),
+                   labels = rev(c("HCV exposure prevalence: 0.05" = "Pathogen Exposure\nPrevalence: 5%",
+                            "HCV exposure prevalence: 0.25" = "Pathogen Exposure\nPrevalence: 25%",
+                            "HCV exposure prevalence: 0.5" = "Pathogen Exposure\nPrevalence: 50%",
+                            "HCV exposure prevalence: 0.75" = "Pathogen Exposure\nPrevalence: 75%",
+                            "HCV exposure prevalence: 1" = "Pathogen Exposure\nPrevalence: 100%")))
+#
+scenario_2b_exposed_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="2B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+      #ylim(c("HCV exposure prevalence: 0.05","HCV exposure prevalence: 0.25","HCV exposure prevalence: 0.5","HCV exposure prevalence: 0.75","HCV exposure prevalence: 1")) + guides(fill="none") + theme(axis.text.y=element_blank())
+      scale_y_discrete(limits=c("HCV exposure prevalence: 0.05",
+                                "HCV exposure prevalence: 0.25",
+                                "HCV exposure prevalence: 0.5",
+                                "HCV exposure prevalence: 0.75",
+                                "HCV exposure prevalence: 1")) +
+                       theme(axis.text.y=element_blank())
+#
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+png("scenario_2b_20k_cases_20k_exposed_controls_U1_OR2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_2b_exposed_controls,scenario_2b_exposed_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+#
+# Comparison between scenarios - exposed vs. exposed | shared vs. shared
+# for label:
+clearance_snp_combined$label<-""
+clearance_snp_combined$label_pos<-""
+clearance_snp_combined$welch_t<-""
+clearance_snp_combined$wilcox<-""
+#
+library(plyr)
+clearance_snp_combined$prevalence_u1<-paste0(clearance_snp_combined$scenario,", ",clearance_snp_combined$u1)
+clearance_snp_combined$prevalence_u1 <- factor(clearance_snp_combined$prevalence_u1, levels = c("HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=1.2)","HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=2)","HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=1.2)","HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=2)","HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=1.2)","HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=2)","HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=1.2)","HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=2)","HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=1.2)","HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=2)"))
+sumdat<-ddply(clearance_snp_combined, c("prevalence_u1","controls"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_beta=mean(Estimate),
+           mean_SE = mean(`Std. Error`),
+           PropSig=prop.table(table(`Pr(>|z|)`<5e-8))['TRUE']*100)
+#
+zcomps<-as.list(unique(clearance_snp_combined$prevalence_u1))
+#
+for(i in 1:length(unique(sumdat$prevalence_u1))){
+  scenario_i<-unique(sumdat$prevalence_u1)[i]
+  beta_num<-sumdat[sumdat$prevalence_u1==scenario_i & sumdat$controls=="shared",]$mean_beta-sumdat[sumdat$prevalence_u1==scenario_i & sumdat$controls=="exposed",]$mean_beta
+  se_beta_denom<-sqrt(sumdat[sumdat$prevalence_u1==scenario_i & sumdat$controls=="shared",]$mean_SE^2 + sumdat[sumdat$prevalence_u1==scenario_i & sumdat$controls=="exposed",]$mean_SE^2)
+  zscore<-beta_num/se_beta_denom
+  pval<-2*pnorm(q=abs(zscore), lower.tail=FALSE)
+  # save things
+  names(zcomps)[i]<-scenario_i
+  zcomps[[i]]<-c(zscore,pval)
+  clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i,]$label<-pval
+  clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i,]$label_pos<-max(clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i,]$Estimate)
+  wilcox<-wilcox.test(clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  welch_t<-t.test(clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i,]$welch_t<-welch_t$p.value
+  clearance_snp_combined[clearance_snp_combined$prevalence_u1==scenario_i,]$wilcox<-wilcox$p.value
+}
+clearance_snp_combined$label<-as.numeric(clearance_snp_combined$label)
+clearance_snp_combined$label_pos<-as.numeric(clearance_snp_combined$label_pos)
+#
+clearance_snp_combined2<-clearance_snp_combined %>% group_by(subgroup) %>% sample_n(1000)
+#
+#
+# recode controls label:
+clearance_snp_combined$controls<-gsub("shared","Population-Based Controls",clearance_snp_combined$controls)
+clearance_snp_combined$controls<-gsub("exposed","Well-Characterized Controls",clearance_snp_combined$controls)
+#
+table(clearance_snp_combined$controls)
+#
+clearance_snp_combined$prevalence_u1_new<-gsub("HCV Exposure/Selection","Pathogen Exposure",clearance_snp_combined$prevalence_u1)
+clearance_snp_combined$prevalence_u1_new<-gsub("HCV exposure prevalence","Pathogen Exposure Prevalence",clearance_snp_combined$prevalence_u1_new)
+clearance_snp_combined$prevalence_u1_new<-gsub(",",",\n",clearance_snp_combined$prevalence_u1_new)
+clearance_snp_combined$prevalence_u1_new<-gsub(": 0.05",": 5%",clearance_snp_combined$prevalence_u1_new)
+clearance_snp_combined$prevalence_u1_new<-gsub(": 0.25",": 25%",clearance_snp_combined$prevalence_u1_new)
+clearance_snp_combined$prevalence_u1_new<-gsub(": 0.5",": 50%",clearance_snp_combined$prevalence_u1_new)
+clearance_snp_combined$prevalence_u1_new<-gsub(": 0.75",": 75%",clearance_snp_combined$prevalence_u1_new)
+clearance_snp_combined$prevalence_u1_new<-gsub(": 1",": 100%",clearance_snp_combined$prevalence_u1_new)
+#
+# factor for plotting:
+clearance_snp_combined$prevalence_u1_new <- factor(clearance_snp_combined$prevalence_u1_new,
+levels = rev(c("Pathogen Exposure Prevalence: 5%,\n U1~Pathogen Exposure (OR=1.2)",
+ "Pathogen Exposure Prevalence: 5%,\n U1~Pathogen Exposure (OR=2)",
+ "Pathogen Exposure Prevalence: 25%,\n U1~Pathogen Exposure (OR=1.2)",
+ "Pathogen Exposure Prevalence: 25%,\n U1~Pathogen Exposure (OR=2)",
+ "Pathogen Exposure Prevalence: 50%,\n U1~Pathogen Exposure (OR=1.2)",
+ "Pathogen Exposure Prevalence: 50%,\n U1~Pathogen Exposure (OR=2)",
+ "Pathogen Exposure Prevalence: 75%,\n U1~Pathogen Exposure (OR=1.2)",
+ "Pathogen Exposure Prevalence: 75%,\n U1~Pathogen Exposure (OR=2)",
+ "Pathogen Exposure Prevalence: 100%,\n U1~Pathogen Exposure (OR=1.2)",
+ "Pathogen Exposure Prevalence: 100%,\n U1~Pathogen Exposure (OR=2)")))
+#
+#
+scenario_2_full_comparison_wPval<-ggplot(clearance_snp_combined,aes(x=exp(Estimate),y=controls, fill=controls)) + facet_wrap(.~factor(prevalence_u1_new),scales="free_y",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 3) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+png("scenario_2_20k_exposed_vs_20k_shared_controls_pval_generalized.png",type="cairo",width = 10, height = 7.5, units= 'in', res=1000)
+#png("scenario_2_20k_exposed_vs_200k_shared_controls_pval_generalized.png",type="cairo",width = 10, height = 7.5, units= 'in', res=1000)
+  scenario_2_full_comparison_wPval
+dev.off()
+######
+# -- proportion of replicates with genome-wide significant associations
+#
+# 20k vs. 20k
+prop.table(table(clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",]$prevalence_u1_new,clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",]$psig))*1000
+#                                                                    Non-significant  P<5e-8
+#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=1.2)         99.4340  0.5660
+#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=1.2)         99.9694  0.0306
+#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=1.2)          99.9974  0.0026
+#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=1.2)         99.9994  0.0006
+#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=1.2)            99.9998  0.0002
+#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=2)            0.0076 99.9924
+#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=2)           18.4272 81.5728
+#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=2)            79.7594 20.2406
+#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=2)           99.4550  0.5450
+#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=2)              99.9998  0.0002
+#
+# 20k vs. 200k
+#                                                                    Non-significant   P<5e-8
+#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=1.2)         92.6370   7.3630
+#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=1.2)         99.6502   0.3498
+#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=1.2)          99.9728   0.0272
+#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=1.2)         99.9980   0.0020
+#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=1.2)           100.0000   0.0000
+#Pathogen Exposure Prevalence: 0.05,\n U1~Pathogen Exposure (OR=2)            0.0000 100.0000
+#Pathogen Exposure Prevalence: 0.25,\n U1~Pathogen Exposure (OR=2)            0.0706  99.9294
+#Pathogen Exposure Prevalence: 0.5,\n U1~Pathogen Exposure (OR=2)            20.1756  79.8244
+#Pathogen Exposure Prevalence: 0.75,\n U1~Pathogen Exposure (OR=2)           92.8640   7.1360
+#Pathogen Exposure Prevalence: 1,\n U1~Pathogen Exposure (OR=2)             100.0000   0.0000
+#
+########## Figure for manuscript:##########
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/")
+# - make one set for OR=2, can have the OR=1.2 figure as supplemental figure
+# 20k (left) vs. 200k (right)
+library(dplyr)
+cases_v_20kpopcontrols<-clearance_snp_combined
+cases_v_20kpopcontrols$n_common<-20000
+#save(cases_v_20kpopcontrols,file="../cases_v_20kpopcontrols_cleaned_annotated.R")
+#
+cases_v_200kpopcontrols<-clearance_snp_combined
+cases_v_200kpopcontrols$n_common<-200000
+#save(cases_v_200kpopcontrols,file="../cases_v_200kpopcontrols_cleaned_annotated.R")
+#
+load("../cases_v_200kpopcontrols_cleaned_annotated.R")
+load("../cases_v_20kpopcontrols_cleaned_annotated.R")
+cases_v_20kpopcontrols_sub<-cases_v_20kpopcontrols %>% group_by(subgroup) %>% sample_n(1000) #for testing
+cases_v_200kpopcontrols_sub<-cases_v_200kpopcontrols %>% group_by(subgroup) %>% sample_n(1000) #for testing
+#
+or2_200kcontrols_psig<-ggplot(cases_v_200kpopcontrols[cases_v_200kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=2)",],aes(x=exp(Estimate),y=controls, fill=controls)) +
+  facet_wrap(.~factor(prevalence_u1_new),scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=cases_v_200kpopcontrols[cases_v_200kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=2)" & cases_v_200kpopcontrols$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 3) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+or2_20kcontrols_psig<-ggplot(cases_v_20kpopcontrols[cases_v_20kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=2)",],aes(x=exp(Estimate),y=controls, fill=controls)) +
+  facet_wrap(.~factor(prevalence_u1_new),scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=cases_v_20kpopcontrols[cases_v_20kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=2)" & cases_v_20kpopcontrols$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 3) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+or1_2_200kcontrols_psig<-ggplot(cases_v_200kpopcontrols[cases_v_200kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=1.2)",],aes(x=exp(Estimate),y=controls, fill=controls)) +
+  facet_wrap(.~factor(prevalence_u1_new),scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=cases_v_200kpopcontrols[cases_v_200kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=1.2)" & cases_v_200kpopcontrols$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 3) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+or1_2_20kcontrols_psig<-ggplot(cases_v_20kpopcontrols[cases_v_20kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=1.2)",],aes(x=exp(Estimate),y=controls, fill=controls)) +
+  facet_wrap(.~factor(prevalence_u1_new),scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=cases_v_20kpopcontrols[cases_v_20kpopcontrols$u1=="U1~HCV Exposure/Selection (OR=1.2)" & cases_v_20kpopcontrols$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 3) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+top_200k <- textGrob("Cases vs. 200,000 Population-based controls", gp = gpar(fontsize = 15))
+top_20k <- textGrob("Cases vs. 20,000 Population-based controls", gp = gpar(fontsize = 15))
+############## FOR MANUSCRIPT #############
+# U1~Pathogen Exposure: OR=2
+png("../scenario_exposure_prevalence_2_20k_v_200k_controls_pval_comparisons.png",type="cairo",width = 12, height = 10, units= 'in', res=1000)
+grid.arrange(top_20k,top_200k,
+             or2_20kcontrols_psig,or2_200kcontrols_psig,
+             ncol=2,heights=c(0.05,0.95))
+dev.off()
+png("../scenario_exposure_prevalence_2_20k_v_200k_controls_pval_comparisons_OR1_2.png",type="cairo",width = 12, height = 10, units= 'in', res=1000)
+grid.arrange(top_20k,top_200k,
+             or1_2_20kcontrols_psig,or1_2_200kcontrols_psig,
+             ncol=2,heights=c(0.05,0.95))
+dev.off()
+############################################
+#
+#
+# Alternative figures - distributions w/ pvalues
+#
+library(ggridges);library(viridis);library(hrbrthemes);library(ggstance)
+png("scenario_2_exposed_vs_shared_controls_pval_ggridge.png",type="cairo",width = 10, height = 6.5, units= 'in', res=1000)
+ggplot(clearance_snp_combined, aes(x = Estimate, y = prevalence_scenario, fill = controls)) + facet_wrap(.~u1,scales="fixed",ncol=2) +
+  geom_density_ridges(alpha=0.75, scale = 0.9, jittered_points = F, position = position_points_jitter(width = 0.05, height = 0),
+  point_shape = '|', point_size = 3, point_alpha = 0.5) +
+  geom_vline(xintercept=0, linetype="dotted",size=1.25) +
+  geom_text(aes(x=0, y=scenario, vjust=1.5,hjust=1, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  guides(colour="none") +
+  theme_ipsum() + labs(y=NULL, x="Beta Estimate (SNP~HCV Clearance)") +
+  theme(legend.position="bottom",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)) +
+    theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+#######################
+library(kSamples) #Are the beta estimates derived from different distributions? #https://stats.stackexchange.com/questions/35461/is-there-a-multiple-sample-version-or-alternative-to-the-kolmogorov-smirnov-test
+scenario1_or1_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+scenario1_or1_2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+scenario1_or2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+#######################
+# Heterogeneity tests #
+### bootstrap-based heterogeneity test for between-study heterogneity in meta analysis : https://cran.r-project.org/web/packages/boot.heterogeneity/vignettes/boot.heterogeneity.html
+# Add N cases/controls
+# subgroup = control type x u1 x scenario (prevalence)
+clearance_snp_combined<-rbind(scenario2_prev05_or1_2,scenario2_prev05_or2,
+                              scenario2_prev25_or1_2,scenario2_prev25_or2,
+                              scenario2_prev50_or1_2,scenario2_prev50_or2,
+                              scenario2_prev75_or1_2,scenario2_prev75_or2,
+                              scenario2_prev100_or1_2,scenario2_prev100_or2)
+#--
+clearance_snp_combined$subgroup<-paste0(clearance_snp_combined$scenario,", ",clearance_snp_combined$u1,", ",clearance_snp_combined$controls)
+clearance_snp_combined$Estimate<-as.numeric(clearance_snp_combined$Estimate)
+clearance_snp_combined$'Std. Error'<-as.numeric(clearance_snp_combined$'Std. Error')
+clearance_snp_combined$'z value'<-as.numeric(clearance_snp_combined$'z value')
+clearance_snp_combined$'Pr(>|z|)'<-as.numeric(clearance_snp_combined$'Pr(>|z|)')
+clearance_snp_combined$cases_N<-20000
+clearance_snp_combined$controls_N<-ifelse(clearance_snp_combined$controls=="shared",200000,20000)
+clearance_snp_combined$N_effective<-(4/((1/clearance_snp_combined$cases_N) + (1/(clearance_snp_combined$controls_N))))
+#
+library(meta)
+# metagen - when using ORs, don't exponentiate the beta estimate
+# ORs X control type:
+library(dplyr)
+set.seed=54321
+dat_subgroup <- clearance_snp_combined %>% group_by(subgroup) %>% sample_n(1000) #1k each
+# 20k studies for scenario 2
+control_type_and_HCVprevalence<-metagen(TE=dat_subgroup$Estimate, seTE=dat_subgroup$`Std. Error`,
+        studlab=dat_subgroup$subgroup,
+        subgroup=dat_subgroup$subgroup,
+        pval=dat_subgroup$`Pr(>|z|)`,
+        sm="OR", method.ci ="z",
+        n.e=dat_subgroup$cases_N, n.c=dat_subgroup$controls_N,
+        overall.hetstat=T,label.e="HCV Clearance", label.c="Controls",
+        test.subgroup=T,method.tau = "ML", print.subgroup.name=TRUE, warn=TRUE)
+#save(control_type_and_HCVprevalence, file="Metaanalysis_Heterogeneity_Results_Scenario2_1k.R")
+# order:
+[1] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=1.2), exposed"
+[2] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=1.2), shared"
+[3] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=2), exposed"
+[4] "HCV exposure prevalence: 0.05, U1~HCV Exposure/Selection (OR=2), shared"
+[5] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=1.2), exposed"
+[6] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=1.2), shared"
+[7] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=2), exposed"
+[8] "HCV exposure prevalence: 0.25, U1~HCV Exposure/Selection (OR=2), shared"
+[9] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=1.2), exposed"
+[10] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=1.2), shared"
+[11] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=2), exposed"
+[12] "HCV exposure prevalence: 0.5, U1~HCV Exposure/Selection (OR=2), shared"
+[13] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=1.2), exposed"
+[14] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=1.2), shared"
+[15] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=2), exposed"
+[16] "HCV exposure prevalence: 0.75, U1~HCV Exposure/Selection (OR=2), shared"
+[17] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=1.2), exposed"
+[18] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=1.2), shared"
+[19] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=2), exposed"
+[20] "HCV exposure prevalence: 1, U1~HCV Exposure/Selection (OR=2), shared"
+
+Results for subgroups (random effects model):
+                                                  k     OR           95%-CI
+#
+subgroup = HCV exposure prevalence: 0.05,  ... 1000 0.9996 [0.9984; 1.0008]
+subgroup = HCV exposure prevalence: 0.05,  ... 1000 1.0585 [1.0576; 1.0595]
+subgroup = HCV exposure prevalence: 0.05,  ... 1000 0.9996 [0.9984; 1.0007]
+subgroup = HCV exposure prevalence: 0.05,  ... 1000 1.1960 [1.1949; 1.1971]
+subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.0007 [0.9995; 1.0020]
+subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.0401 [1.0392; 1.0410]
+subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.0007 [0.9994; 1.0019]
+subgroup = HCV exposure prevalence: 0.25,  ... 1000 1.1309 [1.1299; 1.1319]
+subgroup = HCV exposure prevalence: 0.5, U ... 1000 1.0000 [0.9988; 1.0012]
+subgroup = HCV exposure prevalence: 0.5, U ... 1000 1.0295 [1.0285; 1.0304]
+subgroup = HCV exposure prevalence: 0.5, U ... 1000 0.9995 [0.9983; 1.0007]
+subgroup = HCV exposure prevalence: 0.5, U ... 1000 1.0944 [1.0934; 1.0954]
+subgroup = HCV exposure prevalence: 0.75,  ... 1000 0.9998 [0.9985; 1.0011]
+subgroup = HCV exposure prevalence: 0.75,  ... 1000 1.0185 [1.0176; 1.0194]
+subgroup = HCV exposure prevalence: 0.75,  ... 1000 1.0001 [0.9988; 1.0013]
+subgroup = HCV exposure prevalence: 0.75,  ... 1000 1.0585 [1.0576; 1.0595]
+subgroup = HCV exposure prevalence: 1, U1~ ... 1000 1.0001 [0.9989; 1.0013]
+subgroup = HCV exposure prevalence: 1, U1~ ... 1000 1.0007 [0.9998; 1.0016]
+subgroup = HCV exposure prevalence: 1, U1~ ... 1000 1.0003 [0.9991; 1.0016]
+subgroup = HCV exposure prevalence: 1, U1~ ... 1000 0.9999 [0.9990; 1.0008]
+#                                                tau^2    tau
+subgroup = HCV exposure prevalence: 0.05,  ...       0      0
+subgroup = HCV exposure prevalence: 0.05,  ...       0      0
+subgroup = HCV exposure prevalence: 0.05,  ...       0      0
+subgroup = HCV exposure prevalence: 0.05,  ... <0.0001 0.0038
+subgroup = HCV exposure prevalence: 0.25,  ...       0      0
+subgroup = HCV exposure prevalence: 0.25,  ... <0.0001 0.0016
+subgroup = HCV exposure prevalence: 0.25,  ... <0.0001 0.0051
+subgroup = HCV exposure prevalence: 0.25,  ... <0.0001 0.0017
+subgroup = HCV exposure prevalence: 0.5, U ...       0      0
+subgroup = HCV exposure prevalence: 0.5, U ... <0.0001 0.0025
+subgroup = HCV exposure prevalence: 0.5, U ... <0.0001 0.0049
+subgroup = HCV exposure prevalence: 0.5, U ... <0.0001 0.0029
+subgroup = HCV exposure prevalence: 0.75,  ... <0.0001 0.0063
+subgroup = HCV exposure prevalence: 0.75,  ...       0      0
+subgroup = HCV exposure prevalence: 0.75,  ...       0      0
+subgroup = HCV exposure prevalence: 0.75,  ...       0      0
+subgroup = HCV exposure prevalence: 1, U1~ ...       0      0
+subgroup = HCV exposure prevalence: 1, U1~ ... <0.0001 0.0003
+subgroup = HCV exposure prevalence: 1, U1~ ... <0.0001 0.0037
+subgroup = HCV exposure prevalence: 1, U1~ ...       0      0
+#                                                    Q  I^2
+subgroup = HCV exposure prevalence: 0.05,  ...  954.05 0.0%
+subgroup = HCV exposure prevalence: 0.05,  ...  977.92 0.0%
+subgroup = HCV exposure prevalence: 0.05,  ...  984.48 0.0%
+subgroup = HCV exposure prevalence: 0.05,  ... 1073.46 6.9%
+subgroup = HCV exposure prevalence: 0.25,  ...  974.16 0.0%
+subgroup = HCV exposure prevalence: 0.25,  ... 1011.49 1.2%
+subgroup = HCV exposure prevalence: 0.25,  ... 1072.40 6.8%
+subgroup = HCV exposure prevalence: 0.25,  ... 1014.34 1.5%
+subgroup = HCV exposure prevalence: 0.5, U ...  960.58 0.0%
+subgroup = HCV exposure prevalence: 0.5, U ... 1028.76 2.9%
+subgroup = HCV exposure prevalence: 0.5, U ... 1063.84 6.1%
+subgroup = HCV exposure prevalence: 0.5, U ... 1038.88 3.8%
+subgroup = HCV exposure prevalence: 0.75,  ... 1102.11 9.4%
+subgroup = HCV exposure prevalence: 0.75,  ...  984.66 0.0%
+subgroup = HCV exposure prevalence: 0.75,  ...  981.03 0.0%
+subgroup = HCV exposure prevalence: 0.75,  ...  931.41 0.0%
+subgroup = HCV exposure prevalence: 1, U1~ ...  955.82 0.0%
+subgroup = HCV exposure prevalence: 1, U1~ ... 1000.05 0.1%
+subgroup = HCV exposure prevalence: 1, U1~ ... 1035.00 3.5%
+subgroup = HCV exposure prevalence: 1, U1~ ...  990.48 0.0%
+
+
+
+
+########################################################
+###### Prevalence associated with control type? ########
+sumdat<-ddply(clearance_snp_combined, c("prevalence_scenario","u1","controls"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_beta=mean(Estimate),
+           mean_SE = mean(`Std. Error`),
+           PropSig=prop.table(table(`Pr(>|z|)`<5e-8))['TRUE']*100)
+
+sumdat$prevalence<-gsub("^.* ","",sumdat$prevalence_scenario)
+sumdat$prevalence<-as.numeric(sumdat$prevalence)
+summary(glm(mean_beta~prevalence+controls+u1,data = sumdat))
+# Coefficients:
+#                                    Estimate Std. Error t value Pr(>|t|)
+# prevalence                         -0.05823    0.02149  -2.710 0.015463 *   <-- vs 200k
+# controlsshared                      0.05952    0.01460   4.076 0.000879 *** <-- vs 200k
+# prevalence                         -0.05832    0.02154  -2.708 0.015524 *   <-- vs. 20k
+# controlsshared                      0.05967    0.01463   4.077 0.000877 *** <-- vs. 20k
+#
+# Interpretation:
+# Prevalence is negatively associated with Beta estimates
+# Among shared controls only:
+summary(glm(mean_beta~prevalence+u1,data = sumdat[sumdat$controls=="shared",]))
+# Coefficients:
+#                                    Estimate Std. Error t value Pr(>|t|)
+# prevalence                         -0.11644    0.02364  -4.926  0.00170 ** <-- vs 200k
+# prevalence                         -0.11662    0.02372  -4.917  0.00172 ** <-- vs 20k
+#
+# specific U1~Exposure associations
+# U1~HCV Exposure/Selection (OR=1.2)
+summary(glm(mean_beta~prevalence,data = sumdat[sumdat$controls=="shared" & sumdat$u1=="U1~HCV Exposure/Selection (OR=1.2)",]))
+# Coefficients:
+#              Estimate Std. Error t value Pr(>|t|)
+# prevalence  -0.056429   0.004456  -12.66 0.001062 ** <-- vs 200k
+# prevalence  -0.056412   0.004446  -12.69 0.001056 ** <-- vs 20k
+#
+# U1~HCV Exposure/Selection (OR=2)
+summary(glm(mean_beta~prevalence,data = sumdat[sumdat$controls=="shared" & sumdat$u1=="U1~HCV Exposure/Selection (OR=2)",]))
+# Coefficients:
+#              Estimate Std. Error t value Pr(>|t|)
+# (Intercept)  0.180226   0.008385   21.49  0.00022 ***
+# prevalence  -0.176447   0.013684  -12.89  0.00101 ** <-- vs 200k
+# prevalence  -0.176828   0.013735  -12.87 0.001011 ** <-- vs 20k
+#
+##################################################################################
+##################################################################################
+###########################-------- Scenario 3 --------###########################
+##################################################################################
+##################################################################################
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20k_cases")
+options(stringsAsFactors=F)
+library(data.table);library(ggplot2);library(dplyr);library(plyr);library(MetBrewer)
+load("scenario3_20k_at_scale_Clearance_20_OR_1_2.R")
+scenario3_clearance20_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20k_at_scale_Clearance_20_OR_2.R")
+scenario3_clearance20_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario3_20k_at_scale_Clearance_50_OR_1_2.R")
+scenario3_clearance50_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20k_at_scale_Clearance_50_OR_2.R")
+scenario3_clearance50_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario3_20k_at_scale_Clearance_80_OR_1_2.R")
+scenario3_clearance80_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20k_at_scale_Clearance_80_OR_2.R")
+scenario3_clearance80_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+#
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/Simulations_at_scale/simulations_20kall")
+options(stringsAsFactors=F)
+library(data.table);library(ggplot2);library(dplyr);library(plyr);library(MetBrewer)
+load("scenario3_20kall_at_scale_Clearance_20_OR_1_2.R")
+scenario3_clearance20_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20kall_at_scale_Clearance_20_OR_2.R")
+scenario3_clearance20_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario3_20kall_at_scale_Clearance_50_OR_1_2.R")
+scenario3_clearance50_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20kall_at_scale_Clearance_50_OR_2.R")
+scenario3_clearance50_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario3_20kall_at_scale_Clearance_80_OR_1_2.R")
+scenario3_clearance80_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20kall_at_scale_Clearance_80_OR_2.R")
+scenario3_clearance80_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+#--
+clearance_snp_combined<-rbind(scenario3_clearance20_or1_2,scenario3_clearance20_or2,
+                              scenario3_clearance50_or1_2,scenario3_clearance50_or2,
+                              scenario3_clearance80_or1_2,scenario3_clearance80_or2)
+#--
+clearance_snp_combined$subgroup<-paste0(clearance_snp_combined$scenario,", ",clearance_snp_combined$u1,", ",clearance_snp_combined$controls)
+#--
+clearance_snp_combined$Estimate<-as.numeric(clearance_snp_combined$Estimate)
+clearance_snp_combined$'Std. Error'<-as.numeric(clearance_snp_combined$'Std. Error')
+clearance_snp_combined$'z value'<-as.numeric(clearance_snp_combined$'z value')
+clearance_snp_combined$'Pr(>|z|)'<-as.numeric(clearance_snp_combined$'Pr(>|z|)')
+# extreme values, so end up with suggestive significance at both tails, strange boxplots - just use GW sig
+clearance_snp_combined$psig<-ifelse(clearance_snp_combined$`Pr(>|z|)`<=5e-8,"P<5e-8","Non-significant")
+#--
+#
+library(plyr)
+sumdat<-ddply(clearance_snp_combined, c("subgroup"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_SD = mean(sd(exp(Estimate))),
+           PropSig=as.numeric(prop.table(table(`Pr(>|z|)`<5e-8))['TRUE'])*100)
+#
+table(clearance_snp_combined$subgroup,clearance_snp_combined$psig)
+#--------------------------------------------------------------------------------#
+clearance_snp_combined$approach_scenario<-ifelse(clearance_snp_combined$controls=="shared","3A: Shared Controls","3B: HCV Exposed Controls")
+clearance_snp_combined$approach_scenario<-paste0(clearance_snp_combined$approach_scenario,", ",clearance_snp_combined$u1)
+# scenario 2A- plot of observed OR + pvalues
+clearance_snp_combined$clearance_scenario <- factor(clearance_snp_combined$scenario, levels = c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8"))
+# separate plots for each U1 scenario
+# make separate ones for each U1 scenario - Beta estiamtes + matching pvalue threshold plots, for final comparison plot, can include the shared vs. exposed controls graphs
+# subset just for sake of workflow development
+library(dplyr)
+clearance_snp_combined2<-clearance_snp_combined %>% group_by(subgroup) %>% sample_n(1000)
+##########
+# OR=1.2 #
+##########
+scenario_3a_shared_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3A: Shared Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=clearance_scenario, fill=clearance_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=6,type="continuous")[3:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8"))
+  scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                            "HCV clearance rate: 0.5",
+                            "HCV clearance rate: 0.8"),
+                   labels = rev(c("HCV clearance rate: 0.2" = "Outcome of Interest\nPrevalence: 20%",
+                                  "HCV clearance rate: 0.5" = "Outcome of Interest\nPrevalence: 50%",
+                                  "HCV clearance rate: 0.8" = "Outcome of Interest\nPrevalence: 80%")))
+scenario_3a_shared_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3A: Shared Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=clearance_scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+#      ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8")) + guides(fill="none") + theme(axis.text.y=element_blank())
+      scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                                "HCV clearance rate: 0.5",
+                                "HCV clearance rate: 0.8")) +
+      theme(axis.text.y=element_blank())
+#
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+#png("scenario_3a_20k_cases_200k_shared_controls_U1_OR1_2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+png("scenario_3a_20k_cases_20k_shared_controls_U1_OR1_2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_3a_shared_controls,scenario_3a_shared_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+#
+########
+# OR=2 #
+########
+scenario_3a_shared_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3A: Shared Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=clearance_scenario, fill=clearance_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=6,type="continuous")[3:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8"))
+  scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                            "HCV clearance rate: 0.5",
+                            "HCV clearance rate: 0.8"),
+                   labels = rev(c("HCV clearance rate: 0.2" = "Outcome of Interest\nPrevalence: 20%",
+                                  "HCV clearance rate: 0.5" = "Outcome of Interest\nPrevalence: 50%",
+                                  "HCV clearance rate: 0.8" = "Outcome of Interest\nPrevalence: 80%")))
+scenario_3a_shared_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3A: Shared Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=clearance_scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+      theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+      labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+#      ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8")) + guides(fill="none") + theme(axis.text.y=element_blank())
+      scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                                "HCV clearance rate: 0.5",
+                                "HCV clearance rate: 0.8")) +
+      theme(axis.text.y=element_blank())
+#
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+#png("scenario_3a_20k_cases_200k_shared_controls_U1_OR2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+png("scenario_3a_20k_cases_20k_shared_controls_U1_OR2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_3a_shared_controls,scenario_3a_shared_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+##############################################
+# scenario 3B- plot of observed OR + pvalues #
+scenario_3b_exposed_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=clearance_scenario, fill=clearance_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=6,type="continuous")[3:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8"))
+  scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                            "HCV clearance rate: 0.5",
+                            "HCV clearance rate: 0.8"),
+                   labels = rev(c("HCV clearance rate: 0.2" = "Outcome of Interest\nPrevalence: 20%",
+                                  "HCV clearance rate: 0.5" = "Outcome of Interest\nPrevalence: 50%",
+                                  "HCV clearance rate: 0.8" = "Outcome of Interest\nPrevalence: 80%")))
+scenario_3b_exposed_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=1.2)",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+  theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+  labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+#  ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8")) + guides(fill="none") + theme(axis.text.y=element_blank())
+  scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                            "HCV clearance rate: 0.5",
+                            "HCV clearance rate: 0.8")) +
+  theme(axis.text.y=element_blank())
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+png("scenario_3b_20k_cases_20k_exposed_controls_U1_OR1_2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_3b_exposed_controls,scenario_3b_exposed_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+#
+scenario_3b_exposed_controls<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=clearance_scenario, fill=clearance_scenario)) + #facet_wrap(.~u1,scales="free_x",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="none") +
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=6,type="continuous")[3:1])) + theme(axis.line=element_line()) +
+#  ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8"))
+  scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                            "HCV clearance rate: 0.5",
+                            "HCV clearance rate: 0.8"),
+                   labels = rev(c("HCV clearance rate: 0.2" = "Outcome of Interest\nPrevalence: 20%",
+                                  "HCV clearance rate: 0.5" = "Outcome of Interest\nPrevalence: 50%",
+                                  "HCV clearance rate: 0.8" = "Outcome of Interest\nPrevalence: 80%")))
+scenario_3b_exposed_sig<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="3B: HCV Exposed Controls, U1~HCV Exposure/Selection (OR=2)",],aes(x=Estimate,y=scenario,colour=psig,fill=psig)) + #facet_wrap(.~approach_scenario,scales="free_x",ncol=2) +
+  theme_bw() + theme(legend.position="right") + geom_point(position = position_jitterdodge(jitter.width=0.025),alpha=0.85) + geom_boxplot(colour="black",alpha=0.5) + geom_vline(xintercept=0,linetype="dotted") +
+  labs(y=NULL, x=NULL) + scale_color_manual(name = "",values=c("grey75","firebrick2")) + scale_fill_manual(name = "",values=c("grey75","firebrick2")) +
+#  ylim(c("HCV clearance rate: 0.2","HCV clearance rate: 0.5","HCV clearance rate: 0.8")) + guides(fill="none") + theme(axis.text.y=element_blank())
+  scale_y_discrete(limits=c("HCV clearance rate: 0.2",
+                            "HCV clearance rate: 0.5",
+                            "HCV clearance rate: 0.8")) +
+  theme(axis.text.y=element_blank())
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+png("scenario_3b_20k_cases_20k_exposed_controls_U1_OR2_generalized.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  grid.arrange(scenario_3b_exposed_controls,scenario_3b_exposed_sig,bottom=bottom, ncol=2,widths=c(0.5, 0.5))
+dev.off()
+#
+# Comparison between scenarios - exposed vs. exposed | shared vs. shared
+# for label:
+clearance_snp_combined$label<-""
+clearance_snp_combined$label_pos<-""
+clearance_snp_combined$welch_t<-""
+clearance_snp_combined$wilcox<-""
+#
+library(plyr)
+clearance_snp_combined$clearance_u1<-paste0(clearance_snp_combined$scenario,", ",clearance_snp_combined$u1)
+clearance_snp_combined$clearance_u1 <- factor(clearance_snp_combined$clearance_u1, levels = c("HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=1.2)", "HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=2)", "HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=1.2)", "HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=2)", "HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=1.2)", "HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=2)"))
+sumdat<-ddply(clearance_snp_combined, c("clearance_u1","controls"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_beta=mean(Estimate),
+           mean_SE = mean(`Std. Error`),
+           PropSig=prop.table(table(`Pr(>|z|)`<5e-8))['TRUE']*100)
+#
+zcomps<-as.list(unique(clearance_snp_combined$clearance_u1))
+#
+for(i in 1:length(unique(sumdat$clearance_u1))){
+  scenario_i<-unique(sumdat$clearance_u1)[i]
+  beta_num<-sumdat[sumdat$clearance_u1==scenario_i & sumdat$controls=="shared",]$mean_beta-sumdat[sumdat$clearance_u1==scenario_i & sumdat$controls=="exposed",]$mean_beta
+  se_beta_denom<-sqrt(sumdat[sumdat$clearance_u1==scenario_i & sumdat$controls=="shared",]$mean_SE^2 + sumdat[sumdat$clearance_u1==scenario_i & sumdat$controls=="exposed",]$mean_SE^2)
+  zscore<-beta_num/se_beta_denom
+  pval<-2*pnorm(q=abs(zscore), lower.tail=FALSE)
+  # save things
+  names(zcomps)[i]<-as.character(scenario_i)
+  zcomps[[i]]<-c(zscore,pval)
+  clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i,]$label<-pval
+  clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i,]$label_pos<-max(clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i,]$Estimate)
+  wilcox<-wilcox.test(clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  welch_t<-t.test(clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i,]$welch_t<-welch_t$p.value
+  clearance_snp_combined[clearance_snp_combined$clearance_u1==scenario_i,]$wilcox<-wilcox$p.value
+}
+clearance_snp_combined$label<-as.numeric(clearance_snp_combined$label)
+clearance_snp_combined$label_pos<-as.numeric(clearance_snp_combined$label_pos)
+#
+clearance_snp_combined2<-clearance_snp_combined %>% group_by(subgroup) %>% sample_n(1000)
+#
+# recode controls label:
+clearance_snp_combined$controls<-gsub("shared","Population-Based Controls",clearance_snp_combined$controls)
+clearance_snp_combined$controls<-gsub("exposed","Well-Characterized Controls",clearance_snp_combined$controls)
+#
+table(clearance_snp_combined$controls)
+#
+clearance_snp_combined$clearance_u1_new<-gsub("HCV Exposure/Selection","Pathogen Exposure",clearance_snp_combined$clearance_u1)
+clearance_snp_combined$clearance_u1_new<-gsub("HCV clearance rate: 0.2","Outcome of Interest\nPrevalence: 20%",clearance_snp_combined$clearance_u1_new)
+clearance_snp_combined$clearance_u1_new<-gsub("HCV clearance rate: 0.5","Outcome of Interest\nPrevalence: 50%",clearance_snp_combined$clearance_u1_new)
+clearance_snp_combined$clearance_u1_new<-gsub("HCV clearance rate: 0.8","Outcome of Interest\nPrevalence: 80%",clearance_snp_combined$clearance_u1_new)
+#
+#
+scenario_3_full_comparison_wPval<-ggplot(clearance_snp_combined, aes(x=exp(Estimate),y=controls, fill=controls)) + facet_wrap(.~clearance_u1_new,scales="free_y",ncol=2) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  geom_text(data=clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 3) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+#png("scenario_3_20k_exposed_vs_20k_shared_controls_pval_generalized.png",type="cairo",width = 10, height = 6.5, units= 'in', res=1000)
+png("scenario_3_20k_exposed_vs_200k_shared_controls_pval_generalized.png",type="cairo",width = 10, height = 6.5, units= 'in', res=1000)
+  scenario_3_full_comparison_wPval
+dev.off()
+#
+# proportion of replicates reaching genome-wide significance?
+prop.table(table(clearance_snp_combined[controls=="Population-Based Controls",]$clearance_u1_new,clearance_snp_combined[controls=="Population-Based Controls",]$psig))*1000
+# 20k vs. 200k
+#                                                                      Non-significant P<5e-8
+#  Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=1.2)          496280   3720 (0.744%)
+#  Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=1.2)          498251   1749 (0.3498%)
+#  Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=1.2)          499128    872 (0.1744%)
+#  Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=2)                16 499984 (99.9968%)
+#  Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=2)               353 499647 (99.9294%)
+#  Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=2)              3292 496708 (99.3416%)
+# 20k vs. 20k
+# Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=1.2)           499733    267 (0.0534)
+# Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=1.2)           499847    153 (0.0306)
+# Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=1.2)           499915     85 (0.017)
+# Outcome of Interest\nPrevalence: 20%, U1~Pathogen Exposure (OR=2)              32980 467020 (93.404)
+# Outcome of Interest\nPrevalence: 50%, U1~Pathogen Exposure (OR=2)              92136 407864 (81.5728)
+# Outcome of Interest\nPrevalence: 80%, U1~Pathogen Exposure (OR=2)             173962 326038 (65.2076)
+#
+library(ggridges);library(viridis);library(hrbrthemes);library(ggstance)
+png("scenario_3_exposed_vs_shared_controls_pval_ggridge.png",type="cairo",width = 10, height = 6.5, units= 'in', res=1000)
+ggplot(clearance_snp_combined, aes(x = Estimate, y = clearance_scenario, fill = controls)) + facet_wrap(.~u1,scales="fixed",ncol=2) +
+  geom_density_ridges(alpha=0.75, scale = 0.9, jittered_points = F, position = position_points_jitter(width = 0.05, height = 0),
+  point_shape = '|', point_size = 3, point_alpha = 0.5) +
+  geom_vline(xintercept=0, linetype="dotted",size=1.25) +
+  geom_text(aes(x=0, y=scenario, vjust=1.5,hjust=1, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  guides(colour="none") +
+  theme_ipsum() + labs(y=NULL, x="Beta Estimate (SNP~HCV Clearance)") +
+  theme(legend.position="bottom",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)) +
+    theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+#######################
+library(kSamples) #Are the beta estimates derived from different distributions? #https://stats.stackexchange.com/questions/35461/is-there-a-multiple-sample-version-or-alternative-to-the-kolmogorov-smirnov-test
+scenario1_or1_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+scenario1_or1_2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=1.2)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+scenario1_or2_ad<-ad.test(clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="exposed",]$Estimate,
+                           clearance_snp_combined[clearance_snp_combined$scenario=="U1~HCV Exposure/Selection (OR=2)" & clearance_snp_combined$controls=="shared",]$Estimate,
+                           method = "simulated", dist = FALSE, Nsim = 1000)
+#######################
+# Heterogeneity tests #
+### bootstrap-based heterogeneity test for between-study heterogneity in meta analysis : https://cran.r-project.org/web/packages/boot.heterogeneity/vignettes/boot.heterogeneity.html
+library(data.table);library(ggplot2);library(dplyr);library(plyr);library(MetBrewer)
+load("scenario3_20k_at_scale_Clearance_20_OR_1_2.R")
+scenario3_clearance20_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20k_at_scale_Clearance_20_OR_2.R")
+scenario3_clearance20_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario3_20k_at_scale_Clearance_50_OR_1_2.R")
+scenario3_clearance50_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20k_at_scale_Clearance_50_OR_2.R")
+scenario3_clearance50_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+load("scenario3_20k_at_scale_Clearance_80_OR_1_2.R")
+scenario3_clearance80_or1_2$u1<-"U1~HCV Exposure/Selection (OR=1.2)"
+load("scenario3_20k_at_scale_Clearance_80_OR_2.R")
+scenario3_clearance80_or2$u1<-"U1~HCV Exposure/Selection (OR=2)"
+#--
+clearance_snp_combined<-rbind(scenario3_clearance20_or1_2,scenario3_clearance20_or2,
+                              scenario3_clearance50_or1_2,scenario3_clearance50_or2,
+                              scenario3_clearance80_or1_2,scenario3_clearance80_or2)
+#--
+clearance_snp_combined$Estimate<-as.numeric(clearance_snp_combined$Estimate)
+clearance_snp_combined$'Std. Error'<-as.numeric(clearance_snp_combined$'Std. Error')
+clearance_snp_combined$'z value'<-as.numeric(clearance_snp_combined$'z value')
+clearance_snp_combined$'Pr(>|z|)'<-as.numeric(clearance_snp_combined$'Pr(>|z|)')
+# Add N cases/controls
+clearance_snp_combined$subgroup<-paste0(clearance_snp_combined$scenario,", ",clearance_snp_combined$u1,", ",clearance_snp_combined$controls)
+#--
+clearance_snp_combined$cases_N<-20000
+clearance_snp_combined$controls_N<-ifelse(clearance_snp_combined$controls=="shared",200000,20000)
+clearance_snp_combined$N_effective<-(4/((1/clearance_snp_combined$cases_N) + (1/(clearance_snp_combined$controls_N))))
+#
+library(meta)
+# metagen - when using ORs, don't exponentiate the beta estimate
+# ORs X control type:
+library(dplyr)
+set.seed=54321
+dat_subgroup <- clearance_snp_combined %>% group_by(subgroup) %>% sample_n(1000) #1k each
+# 12000 studies
+control_type_and_clearance<-metagen(TE=dat_subgroup$Estimate, seTE=dat_subgroup$`Std. Error`,
+        studlab=dat_subgroup$subgroup,
+        subgroup=dat_subgroup$subgroup,
+        pval=dat_subgroup$`Pr(>|z|)`,
+        sm="OR", method.ci ="z",
+        n.e=dat_subgroup$cases_N, n.c=dat_subgroup$controls_N,
+        overall.hetstat=T,label.e="HCV Clearance", label.c="Controls",
+        test.subgroup=T,method.tau = "ML", print.subgroup.name=TRUE, warn=TRUE)
+#save(control_type_and_clearance, file="Metaanalysis_Heterogeneity_Results_Scenario3_1k.R")
+# Results for subgroups (random effects model):
+#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=1.2), exposed"
+#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=1.2), shared"
+#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=2), exposed"
+#"HCV clearance rate: 0.2, U1~HCV Exposure/Selection (OR=2), shared"
+#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=1.2), exposed"
+#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=1.2), shared"
+#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=2), exposed"
+#"HCV clearance rate: 0.5, U1~HCV Exposure/Selection (OR=2), shared"
+#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=1.2), exposed"
+#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=1.2), shared"
+#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=2), exposed"
+#"HCV clearance rate: 0.8, U1~HCV Exposure/Selection (OR=2), shared"
+#    k      OR    Tau2    I2
+# 1000	0.9996       0	0.0%
+# 1000	1.044	  <0.001	0.5%
+# 1000	0.9998	     0	0.0%
+# 1000	1.1452	<0.001	2.1%
+# 1000	0.9995	<0.001	4.0%
+# 1000	1.0412	     0	0.0%
+# 1000	1.0006	<0.001	4.5%
+# 1000	1.1326	     0	0.0%
+# 1000	1.0001	     0	0.0%
+# 1000	1.0374	     0	0.0%
+# 1000	1.0001	<0.001	6.0%
+# 1000	1.1198	<0.001	1.9%
+#
+#
+#
+#####################################################
+###### Clearance associated with control type? ######
+sumdat<-ddply(clearance_snp_combined, c("clearance_scenario","u1","controls"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_beta=mean(Estimate),
+           mean_SE = mean(`Std. Error`),
+           PropSig=prop.table(table(`Pr(>|z|)`<5e-8))['TRUE']*100)
+
+sumdat$clearance<-gsub("^.* ","",sumdat$clearance_scenario)
+sumdat$clearance<-as.numeric(sumdat$clearance)
+# Among shared controls only:
+summary(glm(mean_beta~clearance+u1,data = sumdat[sumdat$controls=="shared",]))
+# Coefficients:
+#                                    Estimate Std. Error t value Pr(>|t|)
+#clearance                          -0.024297   0.007450  -3.261 0.047088 *  <---200k controls
+#clearance                          -0.024296   0.007485  -3.246 0.047637 *  <---20k controls
+#
+# specific U1~Exposure associations
+# U1~HCV Exposure/Selection (OR=1.2)
+summary(glm(mean_beta~clearance,data = sumdat[sumdat$controls=="shared" & sumdat$u1=="U1~HCV Exposure/Selection (OR=1.2)",]))
+# Coefficients:
+#              Estimate Std. Error t value Pr(>|t|)
+# clearance   -0.0114685  0.0005378  -21.32   0.0298 * <---200k controls
+# clearance   -0.0114108  0.0005888  -19.38   0.0328 * <---20k controls
+#
+# U1~HCV Exposure/Selection (OR=2)
+summary(glm(mean_beta~clearance,data = sumdat[sumdat$controls=="shared" & sumdat$u1=="U1~HCV Exposure/Selection (OR=2)",]))
+# Coefficients:
+#             Estimate Std. Error t value Pr(>|t|)
+#clearance   -0.037126   0.001898  -19.56   0.0325 * <---200k controls
+#clearance   -0.037182   0.001937   -19.2  0.03313 * <---20k controls
+
+#
+
+
+
+######################################################################################################
+# Re-run with more realistic numbers of cases:
+# same observed effect estimates?
+######################################################################################################
+setwd("~/JHSPH/Research/Methods/Simulation/SingleSNP_SelectionBias/realistic_case_samplesize")
+#future analysis? - seroprevalence of HCV: https://biobank.ctsu.ox.ac.uk/crystal/crystal/docs/infdisease.pdf 0.3% (0.003)
+# Will run into issue of actual number of exposed controls from the population with these prevalence estimates*N, allow resampling
+#
+# load get_results_scenario1() function above
+options(stringsAsFactors=F)
+list.of.packages <- c(
+  "foreach",
+  "future",
+  "doParallel",
+  "lavaan",
+  "parallelly",
+  "data.table",
+  "Rfast"
+)
+lapply(list.of.packages, require, character.only = TRUE)
+library(data.table);library(ggplot2);library(dplyr);library(plyr)
+#--- simulations
+cl <- makeCluster(round(detectCores()/2),methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_20000cases <- foreach(i = 1:1000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(
+                                    cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 20000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(round(detectCores()/2),methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_10000cases <- foreach(i = 1:1000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(
+                                    cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 10000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(round(detectCores()/2),methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_5000cases <- foreach(i = 1:1000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(
+                                    cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 5000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(round(detectCores()/2),methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_1000cases <- foreach(i = 1:1000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(
+                                    cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 1000,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+cl <- makeCluster(round(detectCores()/2),methods=F,autoStop = T)
+clusterExport(cl, c("get_results_scenario1"))
+clusterEvalQ(cl, require(lavaan))
+clusterEvalQ(cl, require(data.table))
+clusterEvalQ(cl, require(Rfast))
+registerDoParallel(cl)
+ptm <- proc.time()
+scenario1_500cases <- foreach(i = 1:1000, .combine = 'rbind',.verbose=TRUE,.errorhandling='pass') %dopar% get_results_scenario1(
+                                    cohort_size = 1000000,
+                                    U1_Exposure_OR = 2, #<---- can alter this, 1.2, 0
+                                    prevalence = 0.25,
+                                    clearance_prevalence = 0.5,
+                                    N_cases = 500,
+                                    N_exposed_controls = 20000,
+                                    N_shared = 200000,
+                                    MAF=0.15,
+                                    seed = i)
+proc.time() - ptm
+stopCluster(cl)
+#
+#######################################
+scenario1_500cases$group<-"500 Cases"
+scenario1_1000cases$group<-"1000 Cases"
+scenario1_5000cases$group<-"5000 Cases"
+scenario1_10000cases$group<-"10000 Cases"
+scenario1_20000cases$group<-"20000 Cases"
+#
+clearance_snp_combined<-rbind(scenario1_500cases,scenario1_1000cases,
+                              scenario1_5000cases,scenario1_10000cases,
+                              scenario1_20000cases)
+#--
+clearance_snp_combined$Estimate<-as.numeric(clearance_snp_combined$Estimate)
+clearance_snp_combined$'Std. Error'<-as.numeric(clearance_snp_combined$'Std. Error')
+clearance_snp_combined$'z value'<-as.numeric(clearance_snp_combined$'z value')
+clearance_snp_combined$'Pr(>|z|)'<-as.numeric(clearance_snp_combined$'Pr(>|z|)')
+#
+# ignore suggestive significance
+clearance_snp_combined$psig<-ifelse(clearance_snp_combined$`Pr(>|z|)`<=5e-8,"P<5e-8","Non-significant")
+#--
+library(plyr)
+sumdat<-ddply(clearance_snp_combined, c("group","controls"), summarise,
+           N    = length(scenario),
+           mean_OR = mean(exp(Estimate)),
+           mean_SD = mean(sd(exp(Estimate))),
+           PropSig=as.numeric(prop.table(table(`Pr(>|z|)`<5e-8))['TRUE'])*100)
+sumdat$PropSig[is.na(sumdat$PropSig)]<-0
+#--------------------------------------------------------------------------------#
+clearance_snp_combined$approach_scenario<-ifelse(clearance_snp_combined$controls=="shared","Common Controls","Pathogen Exposed Controls")
+#
+library(MetBrewer)
+Realistic_common_controls_GWAS_dist<-ggplot(clearance_snp_combined[clearance_snp_combined$approach_scenario=="Common Controls",],aes(x=Estimate,y=group, fill=group)) +
+  geom_boxplot()  + theme_bw() + theme(legend.position="none")+
+  labs(y=NULL, x=NULL) + geom_vline(xintercept=0,linetype="dotted") +
+  scale_fill_manual(name="",values=c(met.brewer("VanGogh2", n=6,type="continuous"))) + theme(axis.line=element_line()) +
+  scale_y_discrete(limits=c("20000 Cases","10000 Cases",
+                            "5000 Cases","1000 Cases",
+                            "500 Cases")) +
+  xlab("Beta Estimate (SNP~Outcome of Interest)")
+sumdat$cases<-gsub(" Cases","",sumdat$group)
+sumdat$cases<-as.numeric(sumdat$cases)
+prop_sig_graph<-ggplot(sumdat,aes(cases,y=PropSig,color=controls)) + geom_point()+geom_line() +theme_bw() + ylab("Proportion Significant:\nOutcome~SNP Associations") + xlab("Cases (N)")
+# Common X axis legend/text
+library(gridExtra);library(grid)
+bottom <- textGrob("Beta Estimate (SNP~Outcome of Interest)", gp = gpar(fontsize = 15))
+lay<-rbind(c(1,1),
+           c(2,3))
+png("Realistic_common_controls_Ncases.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+Realistic_common_controls_GWAS_dist
+dev.off()
+#
+# Comparison between scenarios - exposed vs. exposed | shared vs. shared
+# for label:
+clearance_snp_combined$label<-""
+clearance_snp_combined$label_pos<-""
+clearance_snp_combined$welch_t<-""
+clearance_snp_combined$wilcox<-""
+#
+library(plyr)
+# for z scores etc. use absolute values
+sumdat<-ddply(clearance_snp_combined, c("group","controls"), summarise,
+           N    = length(group),
+           mean_OR = mean(exp(Estimate)),
+           mean_beta=mean(Estimate),
+           mean_SE = mean(`Std. Error`),
+           mean_beta_abs=mean(abs(Estimate)),
+           mean_SE_abs = mean(abs(`Std. Error`)),
+           PropSig=prop.table(table(`Pr(>|z|)`<5e-8))['TRUE'])
+#
+zcomps<-as.list(unique(clearance_snp_combined$group))
+#
+for(i in 1:length(unique(sumdat$group))){
+  scenario_i<-unique(sumdat$group)[i]
+  beta_num<-sumdat[sumdat$group==scenario_i & sumdat$controls=="shared",]$mean_beta-sumdat[sumdat$group==scenario_i & sumdat$controls=="exposed",]$mean_beta
+  se_beta_denom<-sqrt(sumdat[sumdat$group==scenario_i & sumdat$controls=="shared",]$mean_SE^2 + sumdat[sumdat$group==scenario_i & sumdat$controls=="exposed",]$mean_SE^2)
+  zscore<-beta_num/se_beta_denom
+  pval<-2*pnorm(q=abs(zscore), lower.tail=FALSE)
+  # save things
+  names(zcomps)[i]<-scenario_i
+  zcomps[[i]]<-c(zscore,pval)
+  clearance_snp_combined[clearance_snp_combined$group==scenario_i,]$label<-pval
+  clearance_snp_combined[clearance_snp_combined$group==scenario_i,]$label_pos<-max(clearance_snp_combined[clearance_snp_combined$group==scenario_i,]$Estimate)
+  wilcox<-wilcox.test(clearance_snp_combined[clearance_snp_combined$group==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$group==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  welch_t<-t.test(clearance_snp_combined[clearance_snp_combined$group==scenario_i & clearance_snp_combined$controls=="exposed",]$Estimate,
+                             clearance_snp_combined[clearance_snp_combined$group==scenario_i & clearance_snp_combined$controls=="shared",]$Estimate)
+  clearance_snp_combined[clearance_snp_combined$group==scenario_i,]$welch_t<-welch_t$p.value
+  clearance_snp_combined[clearance_snp_combined$group==scenario_i,]$wilcox<-wilcox$p.value
+}
+clearance_snp_combined$label<-as.numeric(clearance_snp_combined$label)
+clearance_snp_combined$label_pos<-as.numeric(clearance_snp_combined$label_pos)
+#
+# recode controls label:
+clearance_snp_combined$controls<-gsub("shared","Population-Based Controls",clearance_snp_combined$controls)
+clearance_snp_combined$controls<-gsub("exposed","Well-Characterized Controls",clearance_snp_combined$controls)
+#
+table(clearance_snp_combined$controls)
+clearance_snp_combined$group_f = factor(clearance_snp_combined$group,
+                                        levels=c('500 Cases','1000 Cases','5000 Cases','10000 Cases','20000 Cases'))
+#
+Realistic_cases_scenario_1_full_comparison_wPval<-ggplot(clearance_snp_combined,aes(x=exp(Estimate),y=controls, fill=controls)) +
+#  facet_wrap(.~group,scales="free_y",ncol=1) +
+  facet_wrap(.~group_f,scales="free_y",ncol=1) +
+  geom_boxplot() + theme_bw() + theme(legend.position="bottom") +theme(axis.text.y=element_blank()) +
+  labs(y=NULL, x="Odds Ratio (SNP~Outcome of Interest)") + geom_vline(xintercept=1,linetype="dotted") +
+  # in-house Z test, rather use wilcoxian rank-sum
+  geom_text(data=clearance_snp_combined[clearance_snp_combined$controls=="Population-Based Controls",],aes(x=exp(label_pos), y=1.5, vjust=0,hjust=0.75, label=paste0("P=",formatC(label,digits=2))), colour = "black", size = 4.5) +
+  scale_fill_manual(name="",values=met.brewer("VanGogh2", n=2,type="discrete")) +
+  ylim(c("Population-Based Controls","Well-Characterized Controls"))
+#
+png("Realistic_common_controls_Ncases_comparisons.png",type="cairo",width = 10, height = 5, units= 'in', res=1000)
+  Realistic_cases_scenario_1_full_comparison_wPval
+dev.off()
+#
+#save(clearance_snp_combined,file="Realistic_common_controls_Ncases_simulations.R")
+load("Realistic_common_controls_Ncases_simulations.R")
+
+
+######################################################################################################
+# Supplemental:
+######################################################################################################
+# Notes on performance enhancements:
+# sample.int() better than sample()
+MAF=0.15; p=MAF;q=(1-p)
+microbenchmark(sample(x = c(0,1,2),N,replace=T,prob = c((q^2),(2*p*q),(p^2))), sample.int(n = 3, 500000,replace=T,prob = c((q^2),(2*p*q),(p^2)))-1, times = 10000)
+#
+# c++ based regressions via Rfast much faster than R base GLM/fastglm/speedglm/etc., including getting the summary results (Beta, Z, pvalue)
+library(fastglm);library(Rfast);library(speedglm)
+microbenchmark::microbenchmark(
+  glm.fit = glm.fit(X_shared, outcome_shared,family=binomial()), #core lightweight R function, can't get pvalue
+  glm     = summary(glm(case ~ SNP_obs, data = rbindlist(list(x_cases,x_shared_controls)),family=binomial())),
+  Rfast_glm_logistic=glm_logistic(x=X_shared[,2],y=outcome_shared,full=TRUE),
+  speedglm=summary(speedglm(case~SNP_obs,data=rbindlist(list(x_cases,x_shared_controls)),family=binomial())),
+  fastglm=summary(fastglm(as.matrix(X_shared),y=outcome_shared,family=binomial())),
+  times   = 100
+)
+# Unit: milliseconds
+#               expr      min        lq      mean   median       uq      max neval  cld
+# glm.fit            151.7046 175.93830 183.27995 180.9911 188.5534 515.1657   100   c
+# glm                219.5577 246.29820 269.07318 252.1731 260.2736 617.6876   100    d
+# Rfast_glm_logistic  50.6341  51.99625  53.76278  53.0374  53.8386  78.7404   100 a   <-------
+# speedglm           146.9772 156.18350 176.60541 174.2663 181.0716 523.8262   100   c
+# fastglm            115.9037 124.07895 140.95149 140.6248 150.8753 484.4242   100  b
+#--

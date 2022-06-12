@@ -12,7 +12,7 @@ table(dat$pheno)
 pheno<-fread("...HCV_UKB_regenie_phenos_10_14_2021_regenie.txt")
 # indicates clearance (0/1), persistence (0/1), HCV Cohort vs. UKB (0/1)
 ##########################
-# sex-stratified matching
+# example: sex-stratified matching
 ##########################
 men<-dat[dat$sex==1,]; men<-data.frame(men); rownames(men)<-men$FID
 women<-dat[dat$sex==2,] ; women<-data.frame(women); rownames(women)<-women$FID
@@ -21,8 +21,6 @@ women<-dat[dat$sex==2,] ; women<-data.frame(women); rownames(women)<-women$FID
 ###############################################
 clearance<-dat[dat$FID %in% pheno[!is.na(pheno$C_UKB),]$FID,]; clearance<-data.frame(clearance); rownames(clearance)<-clearance$FID
 persistence<-dat[dat$FID %in% pheno[!is.na(pheno$P_UKB),]$FID,]; persistence<-data.frame(persistence); rownames(persistence)<-persistence$FID
-# make clearance=men for code below
-men<-clearance
 ##########################################
 library(optmatch)
 #
@@ -59,7 +57,7 @@ distances_m$propensity.trimmed <- with(distances_m, propensity + propensity.cali
 #################
 ### fullmatch ###
 set.seed=321
-mahal_match<-fullmatch(distances_m$mahal.trimmed, data = men)
+mahal_match<-fullmatch(distances_m$mahal.trimmed, data = clearance)
 summary(mahal_match)
 mahal_match_out<-capture.output(print(mahal_match,grouped=T))
 mahal_match_out<-mahal_match_out[702:length(mahal_match_out)]
@@ -69,7 +67,7 @@ mahal_match_out<-mahal_match_out[702:length(mahal_match_out)]
 # Effective Sample Size:  1353.9
 # (equivalent number of matched pairs).
 set.seed=321
-propensity_match<-fullmatch(distances_m$propensity.trimmed, data = men)
+propensity_match<-fullmatch(distances_m$propensity.trimmed, data = clearance)
 summary(propensity_match)
 propensity_match_out<-capture.output(print(propensity_match,grouped=T))
 propensity_match_out<-propensity_match_out[702:length(propensity_match_out)]
@@ -82,7 +80,8 @@ propensity_match_out<-propensity_match_out[702:length(propensity_match_out)]
 # SAVE RELEVANT FILES
 #save(propensity_match,mahal_match,distances_m,file="...cc_matching/PropensityMahalanobis_FulloptmatchOutput.R")
 #############################
-#----- 1 to 1 matching -----#
+#------ 1 to 1 matching -----#
+# -- followed by PCA/GWAS -- #
 #############################
 # The fullmatch function has several arguments for fine tuning the allowed ratio of treatment to control units
 # in a match, and how much of the pool to throw away as unmatchable. One common pattern for these arguments are
@@ -122,10 +121,10 @@ propensity_keep_ids<-fread("...cc_matching/one_to_one_matching_propensity.txt",h
 matchall<-fread("CaseControl_matching_ids_ALL_10282021.txt",header=F)
 all(maha_keep_ids$V1 %in% matchall$V1) # TRUE
 #
-# LD-based pruning - R2<20%, MAF>2.5%,missingness<1.5%
+# LD-based pruning - R2<20%, MAF>2.5%,missingness<1.5% -- exclude regions with long-range LD
 library(SNPRelate)
-gds<-snpgdsOpen("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/UKBall_HCV_merged_imputed_10_9_2021.gds")
-pruned<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/UKBqc_HCV_merged_imputed_10_14_2021.bim")
+gds<-snpgdsOpen("...UKBall_HCV_merged_imputed_10_9_2021.gds")
+pruned<-fread("...UKBqc_HCV_merged_imputed_10_14_2021.bim")
 pruned<-data.frame(pruned[,c(1,2,4)]);colnames(pruned)<-c("snpchr","id","snppos")
 pruned$exclude<-NA
 chr1<-c((48*1000000):(52*1000000))
@@ -161,7 +160,7 @@ one_to_one_matching<-union(maha_keep_ids$V1,propensity_keep_ids$V1)
 library(GWASTools)
 showfile.gds(closeall=TRUE)
 #
-gds<-snpgdsOpen("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/QCcohort/cc_matching/HCV_UKB_matched_cc.gds")
+gds<-snpgdsOpen("...cc_matching/HCV_UKB_matched_cc.gds")
 #
 set.seed(1234)
 snpset_maha <- snpgdsLDpruning(gds, sample.id=maha_keep_ids$V1, snp.id=markers_include, ld.threshold=0.2, missing.rate=0.015, maf=0.025, method="r")
@@ -270,9 +269,9 @@ ggplot(data=pcs, aes(x=PC3,y=PC4,color=cohort)) + geom_point(data=pcs[pcs$cohort
 dev.off()
 #---
 # --- propensity score matching looks much better comparisons, first few PCs
-###########################################
-# GWAS using the propensity score version #
-###########################################
+########
+# GWAS #
+########
 # updated pheno file:
 head -10 ...HCV_UKB_regenie_phenos_10_14_2021_regenie.txt
 # can be 0/1 when using the '--1' flag in the plink glm
@@ -286,10 +285,10 @@ cd ...cc_matching/
 # pheno names: HCV_UKB C_UKB P_UKB
 # Mahalanobis 1:1 GWAS
 ml plink/2.0
-plink2 --bfile /dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/UKBqc_HCV_merged_imputed_10_14_2021 --keep-fam $maha_keep_ids --pheno /dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/HCV_UKB_regenie_phenos_10_14_2021_regenie.txt --1 --pheno-name C_UKB --covar $maha_covar --glm sex cols=+a1freqcc hide-covar --ci 0.95 --out CaseControl_1to1_GWAS_HCV_Clearance_MahalanobisMatching_04212022
+plink2 --bfile ...UKBqc_HCV_merged_imputed_10_14_2021 --keep-fam $maha_keep_ids --pheno ...HCV_UKB_regenie_phenos_10_14_2021_regenie.txt --1 --pheno-name C_UKB --covar $maha_covar --glm sex cols=+a1freqcc hide-covar --ci 0.95 --out CaseControl_1to1_GWAS_HCV_Clearance_MahalanobisMatching_04212022
 ###
 # Propensity 1:1 GWAS
-plink2 --bfile /dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/UKBqc_HCV_merged_imputed_10_14_2021 --keep-fam $propensity_keep_ids --pheno /dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/HCV_UKB_regenie_phenos_10_14_2021_regenie.txt --1 --pheno-name C_UKB --covar $propensity_covar --glm sex cols=+a1freqcc hide-covar --ci 0.95 --out CaseControl_1to1_GWAS_HCV_Clearance_PropensityMatching_04212022
+plink2 --bfile ...UKBqc_HCV_merged_imputed_10_14_2021 --keep-fam $propensity_keep_ids --pheno ...HCV_UKB_regenie_phenos_10_14_2021_regenie.txt --1 --pheno-name C_UKB --covar $propensity_covar --glm sex cols=+a1freqcc hide-covar --ci 0.95 --out CaseControl_1to1_GWAS_HCV_Clearance_PropensityMatching_04212022
 #
 #
 #
@@ -324,8 +323,8 @@ controls<-unique(c(controls_prop_unlist,controls_maha_unlist)) # 364305
 ids_keep<-c(cases,controls) # 365007 individuals
 # extract genotype matrix for specific chr2/chr4 markers:
 library(SNPRelate)
-gds<-snpgdsOpen("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/UKBall_HCV_merged_imputed_10_9_2021.gds")
-load("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/UKB_HCV_merged_filt_N366047_PCA_LD20.R")
+gds<-snpgdsOpen("...UKBall_HCV_merged_imputed_10_9_2021.gds")
+load("...UKB_HCV_merged_filt_N366047_PCA_LD20.R")
 pruned<-ukb_hcv_pca20$snp.id #89472 markers
 markers<-read.gdsn(index.gdsn(gds, "snp.id"))
 # top chr2/4 markers
@@ -334,7 +333,7 @@ vars<-c(grep("2:12323369",markers),grep("2:12358763",markers),grep("4:4428852",m
 vars<-c(vars,grep("19:39734923",markers),grep("6:32660741",markers))
 vars<-markers[vars]
 #--
-covar<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/UKB_HCV_merged_filt_10_17_2021_covariates.txt")
+covar<-fread("...UKB_HCV_merged_filt_10_17_2021_covariates.txt")
 covar<-covar[covar$FID %in% ids_keep,]
 covar<-data.frame(covar);rownames(covar)<-covar$FID
 covar<-covar[ids_keep,]
@@ -352,9 +351,9 @@ pheno<-cbind(covar,genodat)
 pheno$pheno<-ifelse(nchar(pheno$FID)==7,0,1)
 #
 # 702 HCV clearance, 364305 controls
-#fwrite(pheno,file="/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/QCcohort/cc_matching/Propensity_Mahalanobis_matching_cohort_Markers2-4_PCs.txt",quote=F,col.names=T,row.names=F,sep="\t")
+#fwrite(pheno,file="...cc_matching/Propensity_Mahalanobis_matching_cohort_Markers2-4_PCs.txt",quote=F,col.names=T,row.names=F,sep="\t")
 #######################################################
-pheno<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/QCcohort/cc_matching/Propensity_Mahalanobis_matching_cohort_Markers2-4_PCs.txt")
+pheno<-fread("...cc_matching/Propensity_Mahalanobis_matching_cohort_Markers2-4_PCs.txt")
 pheno<-data.frame(pheno)
 #recode sex
 library(dplyr)
@@ -514,24 +513,6 @@ dat$psig<-ifelse(dat$pval<5e-5,"p<5e-5","Non-significant")
 dat$psig<-ifelse(dat$pval<5e-8,"p<5e-8",dat$psig)
 dat$novel<-ifelse(dat$locus %in% c("chr6_32660741","chr19_39734923"),"Known","Novel")
 #
-table(dat$locus,dat$psig)
-#               Non-significant p<5e-5 p<5e-8
-#chr2_12323369               12   2200   1788
-#chr2_12358763               91   3275    634
-#chr4_4428852                 8   1734   2258
-#chr4_4427343                 1   1284   2715
-#chr19_39734923               0    220   3780
-#chr6_32660741                0      0   4000
-#
-#               Non-significant p<5e-5 p<5e-8
-#chr2_12323369                0    827   1173
-#chr2_12358763                2   1587    411
-#chr4_4428852                 0    471   1529
-#chr4_4427343                 0    272   1728
-#chr19_39734923               0     10   1990
-#chr6_32660741                0      0   2000
-#
-#
 library(ggplot2)
 ggplot(dat,aes(x=OR,fill=comp,color=psig))+geom_density(alpha=0.5)+theme_bw()+facet_grid(facets="novel")
 give.n<-function(x){return (c(y = 1, label = length(x)))}
@@ -568,12 +549,12 @@ sumdat<-ddply(dat, c("locus"), summarise,
            CoV = (sd/abs(mean))*100)
 ############################################
 # add Clearance vs. Persistence + UKB ancestry-matched GWAS stats
-cvp<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/Clearance_vs_Persistence_metal.txt")
+cvp<-fread("...Clearance_vs_Persistence_metal.txt")
 vars<-c(grep("2:12323369",cvp$ID),grep("2:12358763",cvp$ID),grep("4:4428852",cvp$ID),grep("4:4427343",cvp$ID),grep("19:39734923",cvp$ID),grep("6:32660741",cvp$ID))
 cvp<-cvp[vars,]
 all(gsub("^.*_","",sumdat$locus)==cvp$POS) #TRUE
 sumdat$CvP_logOR<-log(cvp$OR)
-ukb<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/GWAS_hcv_ukb_eur_sex20PCs_clearance_C_UKB.regenie.cleaned")
+ukb<-fread("...GWAS_hcv_ukb_eur_sex20PCs_clearance_C_UKB.regenie.cleaned")
 vars<-c(grep("2:12323369",ukb$ID),grep("2:12358763",ukb$ID),grep("4:4428852",ukb$ID),grep("4:4427343",ukb$ID),grep("19:39734923",ukb$ID),grep("6:32660741",ukb$ID))
 ukb<-ukb[vars,]
 all(gsub("^.*_","",sumdat$locus)==ukb$GENPOS) #TRUE
@@ -661,6 +642,8 @@ box_sig<-ggplot(dat_filt,aes(x=abs(log(OR)),y=comp,colour=psig)) + facet_wrap(.~
 png("TopLoci_MatchingMethods_Boxplots_CoefficientOfVariation_05082022.png",type="cairo",width = 15, height = 10, units= 'in', res=1000)
 grid.arrange(box_comp_method, box_sig, ncol=2,widths=c(0.7, 0.3))
 dev.off()
+#
+# Exploratory
 #
 # -- Statistical assesment of differences between effect estimates
 # t.test between comparisons
@@ -786,7 +769,7 @@ summary(two.way_chr19)
 tukey.two.way<-TukeyHSD(two.way_chr2_1)
 tukey.two.way
 #
-# significant difference in observed effect estimate when PCs re-estimated, use the propensity-score matched GWAS IDs but with full cohort PCs - speedglm, similar to observed glm regression-based estimates?
+# significant difference in observed effect estimate when PCs re-estimated, use the propensity-score matched GWAS IDs but with full cohort PCs
 load("CaseControl_Clearance_1to10_PropensityMatching_PCA_10282021.R")
 pheno<-fread("Propensity_Mahalanobis_matching_cohort_Markers2-4_PCs.txt")
 pheno<-data.frame(pheno)
@@ -834,7 +817,7 @@ prop.table(table(reg_results_pval$chr4_4427343<5e-8)) #more sig than other chr4 
 ###################################################
 #
 set.seed(123)
-propensity_match5<-fullmatch(distances_m$propensity.trimmed, data = men, max.controls=5)
+propensity_match5<-fullmatch(distances_m$propensity.trimmed, data = clearance, max.controls=5)
 summary(propensity_match5)
 # Structure of matched sets:
 #    1:1    1:2    1:3    1:4   1:5+    0:1
@@ -844,7 +827,7 @@ propensity_match5<-propensity_match5[2:length(propensity_match5)]
 cases_p5<-gsub(",.*$","", propensity_match5);cases_p5<-gsub("^.* ","", cases_p5)
 controls_p5<-gsub("^.*?, ","", propensity_match5);controls_p5<-gsub(" ","",controls_p5)
 set.seed(321)
-propensity_match10<-fullmatch(distances_m$propensity.trimmed, data = men, max.controls=10)
+propensity_match10<-fullmatch(distances_m$propensity.trimmed, data = clearance, max.controls=10)
 summary(propensity_match10)
 # Structure of matched sets:
 #    1:1    1:2    1:3    1:4   1:5+    0:1
@@ -857,7 +840,7 @@ cases_p10<-gsub(",.*$","", propensity_match10);cases_p10<-gsub("^.* ","", cases_
 controls_p10<-gsub("^.*?, ","", propensity_match10);controls_p10<-gsub(" ","",controls_p10)
 ###################
 set.seed=321
-mahal_match<-fullmatch(distances_m$mahal.trimmed, data = men, max.controls=5)
+mahal_match<-fullmatch(distances_m$mahal.trimmed, data = clearance, max.controls=5)
 summary(mahal_match)
 # Structure of matched sets:
 #   1:1    1:2    1:3    1:4   1:5+    0:1
@@ -865,7 +848,7 @@ summary(mahal_match)
 # Effective Sample Size:  1158.7
 # (equivalent number of matched pairs).
 #
-mahal_match<-fullmatch(distances_m$mahal.trimmed, data = men, max.controls=10) # for IBD-based analysis, Mahalanobis
+mahal_match<-fullmatch(distances_m$mahal.trimmed, data = clearance, max.controls=10) 
 matches<-capture.output(print(mahal_match,grouped=T))
 matches<-matches[2:length(matches)]
 # Structure of matched sets:
@@ -877,9 +860,9 @@ matches<-matches[2:length(matches)]
 cases<-gsub(",.*$","", matches);cases<-gsub("^.* ","", cases)
 controls<-gsub("^.*?, ","", matches);controls<-gsub(" ","",controls)
 #################################################
-#--- all 1:5 matched controls - men
-controls_n5_men<-unlist(strsplit(controls, ','))
-matched_c1c5<-c(cases,controls_n5_men)
+#--- all 1:5 matched controls - clearance
+controls_n5_clearance<-unlist(strsplit(controls, ','))
+matched_c1c5<-c(cases,controls_n5_clearance)
 keep_ids<-data.frame(matched_c1c5);colnames(keep_ids)<-"FID"
 keep_ids$IID<-keep_ids$FID
 #fwrite(keep_ids,file="..cc_matching/CaseControl_Clearance_1to5_matching_Mahalanobis_11032021.txt",sep="\t",col.names=F,row.names=F,quote=F)
@@ -898,7 +881,7 @@ keep_ids$IID<-keep_ids$FID
 #fwrite(keep_ids,file="...cc_matching/CaseControl_Clearance_1to10_matching_Mahalanobis_10282021.txt",sep="\t",col.names=F,row.names=F,quote=F)
 # 6633 control individuals
 #-------------------------------------------------#
-#--- 1:<5 CC ratio - Propensity score amtching ---#
+#--- 1:<5 CC ratio - Propensity score matching ---#
 controls_p5<-unlist(strsplit(controls_p5, ',')); controls_p5<-data.frame(controls_p5)
 controls_p5<-controls_p5$controls_p5[which(nchar(controls_p5$controls_p5)==7)]
 cases_p5<-unlist(strsplit(cases_p5, ',')); cases_p5<-data.frame(cases_p5)
@@ -909,7 +892,7 @@ keep_ids$IID<-keep_ids$FID
 #fwrite(keep_ids,file="...cc_matching/CaseControl_Clearance_1to5_matching_Propensity_10282021.txt",sep="\t",col.names=F,row.names=F,quote=F)
 # 3394 control individuals
 #-------------------------------------------------#
-#--- 1:<10 CC ratio - Propensity score amtching ---#
+#--- 1:<10 CC ratio - Propensity score matching ---#
 controls_p10<-unlist(strsplit(controls_p10, ',')); controls_p10<-data.frame(controls_p10)
 controls_p10<-controls_p10$controls_p10[which(nchar(controls_p10$controls_p10)==7)]
 cases_p10<-unlist(strsplit(cases_p10, ',')); cases_p10<-data.frame(cases_p10)
@@ -921,7 +904,7 @@ keep_ids$IID<-keep_ids$FID
 # 6666 control individuals (1 row with 'Members'...)
 #--
 ###########################################################################################################
-# make plink file containing cases + all possible controls identified above, purely to speed things up!
+# make plink file containing cases + all possible controls identified above, purely to speed things up
 #
 setwd("...cc_matching")
 tmp1<-fread("CaseControl_Clearance_1to10_matching_Mahalanobis_10282021.txt",header=F)
@@ -935,7 +918,7 @@ cc_update<-cc_update[!duplicated(cc_update$V1),]
 #fwrite(cc_update,file="...cc_matching/CaseControl_matching_ids_ALL_10282021.txt",sep="\t",col.names=F,row.names=F,quote=F)
 #
 ##################################################################
-# other
+# other notes
 # The fullmatch function as several arguments for fine tuning the allowed ratio of treatment to control units
 # in a match, and how much of the pool to throw away as unmatchable. One common pattern for these arguments are
 # pairs: one treated to one control unit. Not every distance specification is amendable to this pattern (e.g.

@@ -1,5 +1,5 @@
 ml bcftools/1.11
-cd /dcs04/duggal/data/dduchen_dat/pop_controls/gnomad
+cd .../gnomad
 
 bcftools view -h gnomad.genomes.r2.1.1.sites.22.vcf.bgz > chr22_header.txt
 ##INFO=<ID=AF_nfe,Number=A,Type=Float,Description="Alternate allele frequency in samples of Non-Finnish European ancestry">
@@ -10,7 +10,6 @@ bcftools view -h gnomad.genomes.r2.1.1.sites.22.vcf.bgz > chr22_header.txt
 #bcftools query -f '%CHROM %POS %REF %ALT %INFO/AF_nfe %INFO/controls_AF_nfe %INFO/AF_popmax %INFO/controls_AF_popmax\n' gnomad.genomes.r2.1.1.sites.22.vcf.bgz | head -3
 #bcftools query -f '%CHROM %POS %REF %ALT %INFO/AF_nfe\n' gnomad.genomes.r2.1.1.sites.22.vcf.bgz > chr22_gnomad_nonFinnish_AF
 #
-#
 bcftools query -f '%CHROM %POS %REF %ALT %INFO/AF_nfe\n' gnomad.genomes.r2.1.1.sites.vcf.bgz > GNOMAD_NonFinnish_AF
 #
 # genomewide stats downloaded 9/10/2021 - will print out:
@@ -18,141 +17,39 @@ bcftools query -f '%CHROM %POS %REF %ALT %INFO/AF_nfe\n' gnomad.genomes.r2.1.1.s
 #22 16050036 A C 0.274194
 #22 16050068 A G 0
 #22 16050069 C T 0
-#---
+#...
 #---
 # in 5th column, require >0
 awk '(NR>1) && ($5 > 0 ) ' GNOMAD_NonFinnish_AF > GNOMAD_NonFinnish_AF_non0
 #
-#gnomad_file<-"/dcs04/duggal/data/dduchen_dat/pop_controls/gnomad/GNOMAD_NonFinnish_AF_non0"
+#gnomad_file<-".../gnomad/GNOMAD_NonFinnish_AF_non0"
 #gnomad_file<-fread(gnomad_file)
 #gnomad_file<-gnomad_file[nchar(gnomad_file$V3)==1 & nchar(gnomad_file$V4)==1,]
-gnomad_file$match<-NA
-gnomad_file$match<-paste0(gnomad_file$V1,":",gnomad_file$V2)
+gnomad_file$match<-NA; gnomad_file$match<-paste0(gnomad_file$V1,":",gnomad_file$V2)
 #fwrite(gnomad_file,file="GNOMAD_NonFinnish_AF_non0_biallelic",sep="\t",quote=F)
-gnomad_file<-fread("GNOMAD_NonFinnish_AF_non0_biallelic")
-# GWAS results :
-gwas_r<-read.delim("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/GWAS_hcv_ukb_eur_sex20PCs_HCV_UKB.regenie",sep=" ")
-gwas_r$A1FREQ_CASES<-gwas_r$A1FREQ_CONTROLS ; gwas_r$A1FREQ_CONTROLS<-gwas_r$INFO ; gwas_r$INFO<-NULL
-gwas_s<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/SAIGE_GWAS/clearance_ukb_20PCs.SAIGE_assoc.txt")
 #
-all(gwas_s$SNPID %in% gwas_r$ID)# TRUE
-cor.test(gwas_r[gwas_r$ID %in% gwas_s$SNPID,]$A1FREQ_CONTROLS,(1-gwas_s$AF.Controls))
-# correlation = 1. regenie A1 freq vs. saige A2 freq
-#--
-gwas_r$match<-paste0(gwas_r$CHROM,":",gwas_r$GENPOS)
-gnomad_r<-gnomad_file[gnomad_file$match %in% gwas_r$match,]
-#limit to matching alleles
-1:1619541
-1:1707740
-1:1812521
-#
-# prints out the duplicate variants, keep the one with matching alleles
-for(i in 1:nrow(gwas_r)){
-  varid<-gwas_r[i,]$match
-  if(nrow(gnomad_r[gnomad_r$match==varid,])>1) {
-    print(varid)
-    tmp_gnomad<-gnomad_r[gnomad_r$match==varid,]
-    alleles<-c(gwas_r[gwas_r$match==varid,]$ALLELE0,gwas_r[gwas_r$match==varid,]$ALLELE1)
-    tmp_gnomad[tmp_gnomad$V3 %in% alleles & tmp_gnomad$V4 %in% alleles,]
-    gnomad_r[gnomad_r$match==varid,] <- tmp_gnomad[tmp_gnomad$V3 %in% alleles & tmp_gnomad$V4 %in% alleles,]
-  }
-}
-gnomad_r_nodup<-gnomad_r[!duplicated(gnomad_r$match),]
-save(gnomad_r_nodup,file="GNOMAD_biallelic_HCV_GWAS_matching.R")
-# 590138 / 590262 markers
-# allele frequency within absolute difference of 5% if MAF>=10%
-# allele frequency within 25% of AF if MAF<10%
-# get list of genotyped vars to exclude
-gwas_r$gnomad_check<-NA
-#gwas_r_filt<-gwas_r[gwas_r$LOG10P>3,] # if interested in excluding vars
-gwas_r_filt<-gwas_r
-for(i in 76085:nrow(gwas_r_filt)){
-  tmp<-gwas_r_filt[i,]
-  varid<-gwas_r_filt[i,]$match
-  ukb_maf<-tmp$A1FREQ_CONTROLS
-  if(varid %in% gnomad_r_nodup$match){
-  tmp_gnomad<-gnomad_r_nodup[gnomad_r_nodup$match==varid,]
-  gnomad_maf<-tmp_gnomad$V5
-  if(tmp_gnomad$V3==tmp$ALLELE0){
-    difference<-abs(ukb_maf-gnomad_maf)
-    gwas_r_filt[i,]$gnomad_check<-ifelse(gnomad_maf>=0.1 & difference>0.05, "exclude",gwas_r_filt[i,]$gnomad_check)
-    gwas_r_filt[i,]$gnomad_check<-ifelse(gnomad_maf<0.1 & difference>(gnomad_maf*0.25), "exclude",gwas_r_filt[i,]$gnomad_check)
-    } else if(tmp_gnomad$V3==tmp$ALLELE1){
-    difference<-abs(ukb_maf-(1-gnomad_maf))
-    gwas_r_filt[i,]$gnomad_check<-ifelse(gnomad_maf>=0.1 & difference>0.05, "exclude",gwas_r_filt[i,]$gnomad_check)
-    gwas_r_filt[i,]$gnomad_check<-ifelse(gnomad_maf<0.1 & difference>((1-gnomad_maf)*0.25), "exclude",gwas_r_filt[i,]$gnomad_check)
-    } else { print(paste0("no match for "),varid)}
-} else {
-  print(paste0(varid, " not in GNOMAD (due to MAF/non-biallelic filter?)"))
-  gwas_r_filt[i,]$gnomad_check<-"gnomad_missing"
-}
-}
-table(gwas_r_filt$gnomad_check)
-# exclude gnomad_missing
-#    9767            124
-# fwrite(gwas_r_filt,"/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/GWAS_hcv_ukb_eur_sex20PCs_HCV_UKB.regenie.gnomad_check",sep="\t",quote=F,col.names=T,row.names=F)
-exclude_gnomad<-gwas_r_filt[gwas_r_filt$gnomad_check %in% c("exclude","gnomad_missing"),]$ID
-fwrite(data.frame(exclude_gnomad),"/dcs04/duggal/data/dduchen_dat/pop_controls/gnomad/HCV_UKB_genotyped_vars_gnomad_exclude.txt",sep="\t",quote=F,col.names=F,row.names=F)
-#
-gnomad_file
-
-
-################################################
-# Manhattan plot highlighting the excluded vars
-################################################
-dat<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/GWAS_hcv_ukb_eur_sex20PCs_HCV_UKB.regenie.gnomad_check",sep="\t")
-dat$P<-10^(-dat$LOG10P)
-library(GenABEL)
-lambda<-estlambda(dat$P, method="median");lambda # 1.03655
-# excluding variant not in the filtered GNOMAD reference (N=124) or excluded due to AF difference (N=9767)
-lambda<-estlambda(dat[dat$gnomad_check %in% c(""),]$P, method="median");lambda # 1.031846
-#
-snps_to_highlight<-dat[dat$gnomad_check %in% c("exclude","gnomad_missing"),]$ID
-png(filename="Manhattan_HCVCohort_vs_UKBPopControls_gnomad_filt_09142021.png",width = 12, height = 6.5, units = 'in', res = 1000)
-manhattan(dat[dat$gnomad_check=="",], chr = "CHROM", bp = "GENPOS", p = "P", snp = "ID", col = c("blue4", "orange3"), main= "", chrlabs = NULL, #no title on the actual graph
-          suggestiveline = F, logp = T, annotate=snps_to_highlight,annotatePval=5e-8, annotateTop = T)
-dev.off()
-# QQ plot
-jpeg(file = "QQ_HCVCohort_vs_UKBPopControls_gnomad_filt_09142021.jpeg", width = 10, height = 10, units = 'in', res = 300)
-qq(dat[dat$gnomad_check=="",]$P,main="Q-Q Plot: HCV Cohort vs. UKB: Cohort-Level Analysis")
-dev.off()
-
-#########################################################
-### - GNMOAD filtering for all imputed UKB variants - ###
-# make allele frequency table:
-# Ancestry-based matched UKB cohort
-~/tools/plink --bfile /dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/ukb_for_merging_newref_09_15_2021 --freq --out ukb_imputed_AF
-# Additional QC-filter + Ancestry-based matching UKB cohort
-# UKB individuals who passed QC filters:
-qc_keep<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/QC_plinkQC/UKB_HCV_merged_keep_PCA_5percent_HetFilterx2.txt", header=F)
-qc_keep<-qc_keep[nchar(qc_keep$V1)==7,]
-fwrite(qc_keep,file="/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/QC_plinkQC/UKB_HCV_merged_keep_PCA_5percent_HetFilterx2_UKB_ids.txt",col.names=F,row.names=F,sep="\t",quote=F)
-cd /dcs04/duggal/data/dduchen_dat/pop_controls/gnomad
-~/tools/plink --bfile /dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/UKBqc_HCV_merged_imputed_10_14_2021 --keep /dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/QC_plinkQC/UKB_HCV_merged_keep_PCA_5percent_HetFilterx2_UKB_ids.txt --freq --out /dcs04/duggal/data/dduchen_dat/pop_controls/gnomad/ukbqc_imputed_AF
-# 6009835 variants loaded from .bim file.
-# 366047 people (168918 males, 197129 females) loaded from .fam.
-# 1739 phenotype values loaded from .fam.
-# --keep: 364308 people remaining.
-#
-R
-library(bigreadr)
-#ukb <- bigreadr::fread2("ukb_imputed_AF.frq", showProgress = FALSE)
-ukb <- bigreadr::fread2("/dcs04/duggal/data/dduchen_dat/pop_controls/gnomad/ukbqc_imputed_AF.frq", showProgress = FALSE)
-ukb$match<-gsub("\\[.*$","",ukb$SNP)
-# for plink gwas output - REF/ALT/A1 - A1 might be refrence allele sometimes. make A0 the oposite of A1
+# gnomAD-based filtering: load GWAS results
+#dat<-fread("...cc_matching/CaseControl_1to1_GWAS_HCV_Clearance_PropensityMatching_04212022.C_UKB.glm.logistic.hybrid")
+dat$match<-paste0(dat$'#CHROM',":",dat$POS)
+ukb<-dat
+# for plink gwas output - REF/ALT/A1 - A1 might be refrence allele sometimes. make A0 the oposite of A1, this step unneccesary for REGENIE output
 ukb$A2<-ifelse(ukb$A1==ukb$ALT,ukb$REF,ukb$ALT)
-table(ukb$REF==ukb$A0)
-#ex.  FALSE    TRUE
-#     40736 5969099
+table(ukb$REF==ukb$A2)
+#  FALSE
+#  ~40k
 #
-#
-gnomad_file<-bigreadr::fread2("/dcs04/duggal/data/dduchen_dat/pop_controls/gnomad/GNOMAD_NonFinnish_AF_non0_biallelic")
+# filter focused on markers with P<[some value]
+gnomad_file<-bigreadr::fread2("GNOMAD_NonFinnish_AF_non0_biallelic")
 # 115 million SNPs
-gnomad_file<-gnomad_file[gnomad_file$match %in% ukb$match,]
-# 6,195,763 positions
+gnomad_file<-gnomad_file[gnomad_file$match %in% dat$match,]
+# 6,173,770 positions
 # prints out the duplicate variants, keep the one with matching alleles
 table(duplicated(gnomad_file$match))
-#166062
+#165316
+# focus on moderately significant hits
+ukb<-ukb[ukb$P<0.001,] 
+# re-filter gnomad_file to 'sig' hits
+gnomad_file<-gnomad_file[gnomad_file$match %in% ukb$match,]
 gnomad_file_dup<-gnomad_file[duplicated(gnomad_file$match),]
 gnomad_file_dup$no_match<-NA
 ukb_dups<-ukb[ukb$match %in% gnomad_file_dup$match,]
@@ -160,7 +57,7 @@ ukb_dups<-ukb[ukb$match %in% gnomad_file_dup$match,]
 for(i in 1:nrow(ukb_dups)){
   varid<-ukb_dups[i,]$match
   if(nrow(gnomad_file_dup[gnomad_file_dup$match==varid,])>1) {
-    print(varid)
+    #print(varid)
     tmp_gnomad<-gnomad_file_dup[gnomad_file_dup$match==varid,]
     alleles<-c(ukb[ukb$match==varid,]$A1,ukb[ukb$match==varid,]$A2)
     if(nrow(tmp_gnomad[tmp_gnomad$V3 %in% alleles & tmp_gnomad$V4 %in% alleles,])>0){
@@ -171,35 +68,28 @@ for(i in 1:nrow(ukb_dups)){
       }
   }
 }
-table(gnomad_file_dup$no_match) # 1074 markers without a match
+table(gnomad_file_dup$no_match) # prints out number of markers with no match
+#
 gnomad_file_dup_filt<-gnomad_file_dup
 gnomad_file_nodup<-gnomad_file[!duplicated(gnomad_file$match),]
 gnomad_file_nodup<-rbind(gnomad_file_nodup,gnomad_file_dup_filt[is.na(gnomad_file_dup_filt$no_match),1:6])
-# 6,194,689
+dim(gnomad_file_nodup)
 gnomad_file_nodup<-gnomad_file_nodup[!duplicated(gnomad_file_nodup$match),]
-# 6,029,701
-all(gnomad_file_nodup$match %in% ukb$match) #TRUE
-#save(gnomad_file_nodup,file="/dcs04/duggal/data/dduchen_dat/pop_controls/gnomad/GNOMAD_biallelic_HCV_GWAS_matching_imputed.R")
-# 6029701 / 6031121 markers
-# allele frequency within absolute difference of 5% if MAF>=10%
-# allele frequency within 25% of AF if MAF<10%
-# get list of genotyped vars to exclude
+dim(gnomad_file_nodup)
+all(gnomad_file_nodup$match %in% ukb$match) #should be TRUE
 ukb$gnomad_check<-NA
-#ukb_precheck<-ukb # save just in case
 gnomad_file_nodup<-gnomad_file_nodup[,c(3:6)]
-ukb<-ukb_precheck # save just in case
-# vectors to iterate over rather than dataframe
-table(ifelse(ukb_match %in% gnomad_file_nodup$match,NA,"gnomad_missing"))
-# 1420 vars not in gnomad
-ukb<-ukb_precheck # save just in case
+table(ifelse(ukb$match %in% gnomad_file_nodup$match,NA,"gnomad_missing"))
 ukb$gnomad_check<-ifelse(ukb$match %in% gnomad_file_nodup$match,NA,"gnomad_missing")
 #
 gnomad_r_nodup<-gnomad_file_nodup
 ukb_filt<-ukb
 rownames(ukb_filt)<-ukb_filt$match
+# iterate across all markers/positions
 for(i in 1:nrow(ukb_filt)){
   varid<-ukb_filt$match[i]
-  ukb_maf<-ukb_filt$MAF[i]
+  ukb_maf<-as.numeric(ukb_filt$A1_CTRL_FREQ[i])
+#  ukb_maf<-as.numeric(ukb_filt$freq[i])
   if(varid %in% gnomad_r_nodup$match){
   tmp_gnomad<-gnomad_r_nodup[gnomad_r_nodup$match==varid,]
   gnomad_maf<-tmp_gnomad$V5
@@ -219,164 +109,10 @@ for(i in 1:nrow(ukb_filt)){
 }
 table(ukb_filt$gnomad_check)
 #
-
-## -- plot the QC-passed markers.. MAF vs. gnomad:
-dat<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/GWAS_hcv_ukb_eur_sex20PCs_clearance_C_UKB.regenie.cleaned.comparison")
-dat$match<-paste0(dat$CHROM,":",dat$GENPOS)
-# table(dat$A1FREQ_CONTROLS>0.5)
-# ^all close to 0.5
-gnomad<-gnomad_file_nodup
-gnomad$MAF<-gnomad$V5
-gnomad[gnomad$V5>0.5,]$MAF<-(1-gnomad[gnomad$V5>0.5,]$V5)
-table(gnomad$MAF>0.5) #  FALSE: 6029701
-#
-gnomad<-gnomad[gnomad$match %in% dat$match,]
-dat<-dat[dat$match %in% gnomad$match,]
-#
-all.equal(gnomad$match,dat$match) #TRUE
-cor.test(gnomad$MAF,dat$A1FREQ_CONTROLS)
-# cor
-#0.9775526
-colnames(gnomad)[6]<-"gnomAD_match"
-maf_compare<-cbind(dat[,c("match","ID","A1FREQ_CASES","A1FREQ_CONTROLS","N","EXTRA","P")],gnomad[,c("gnomAD_match","MAF")])
-maf_compare$EXTRA<-gsub("^$","Passed AF Filter (p<5e-5)")
-ggplot(data=maf_compare[1:5000,],aes(x=A1FREQ_CONTROLS,y=MAF,color=EXTRA)) + geom_point() + theme_bw() +
-  xlab("UKB Ancestry-Matched Controls (MAF)") + ylab("gnomAD Non-Finnish Europeans (MAF)")
-
-png(filename="UKB_HCV_gnomAD_SharedMarkers_MAF_Comparison_all.png",width = 15, height = 12, units = 'in', res = 1000)
-ggplot(data=maf_compare,aes(x=A1FREQ_CONTROLS,y=MAF,color=EXTRA)) + geom_point() + theme_bw() +
-  xlab("UKB Ancestry-Matched Controls (MAF)") + ylab("gnomAD Non-Finnish Europeans (MAF)")
-dev.off()
-#
-# -- limit to suggetive + sig markers
-png(filename="UKB_HCV_gnomAD_SharedMarkers_MAF_Comparison_suggestive.png",width = 15, height = 12, units = 'in', res = 1000)
-ggplot(data=maf_compare[maf_compare$P<5e-5 & maf_compare$EXTRA %in% c("")],aes(x=A1FREQ_CONTROLS,y=MAF,color=EXTRA)) + geom_point() + theme_bw() +
-  xlab("UKB Ancestry-Matched Controls (MAF)") + ylab("gnomAD Non-Finnish Europeans (MAF)")
-dev.off()
-#
-png(filename="UKB_HCV_gnomAD_SharedMarkers_MAF_Comparison_suggestive.png",width = 15, height = 12, units = 'in', res = 1000)
-ggplot(data=maf_compare[maf_compare$P<5e-5,],aes(x=A1FREQ_CONTROLS,y=MAF,color=EXTRA)) + geom_point() + theme_bw() +
-  xlab("UKB Ancestry-Matched Controls (MAF)") + ylab("gnomAD Non-Finnish Europeans (MAF)")
-dev.off()
-
-
-
-# sig hits in markers not overlapping with gnomad?
-dat<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/GWAS_hcv_ukb_eur_sex20PCs_clearance_C_UKB.regenie.cleaned.comparison")
-dat$match<-paste0(dat$CHROM,":",dat$GENPOS)
-sig<-dat[dat$P<5e-5,]
-table(sig$match %in% gnomad_file_nodup$match)
-#115 not in gnomad (out of 1218, 9.4%)
-# 2 GWAS significant markers not in gnomad (couldnt filter!)
-overlap<-sig[sig$P<5e-8 & sig$match %in% gnomad_file_nodup$match,]$ID
-setdiff(sig[sig$P<5e-7,]$ID,overlap)
-# markers not in gnomad
-# "2:12323369[b37]G,A" UKB controls: 12.5%<- twinsUK- 13.21, gnomad non-finnish - 13.2% (subpops range between SouthernEuropean:11.3%-Estonian:14.7%)
-# "2:12358763[b37]T,A UKB controls: 14.5%<- twinsUK- 14.97, gnoamad non-finnish - 16% (subpops range between SouthernEuropean:13.2%-Estonian:20.2%)
-# "6:32653136[b37]A,G" UKB controls: 23.5%<- 1kGenomes-23.4
-# "6:32653651[b37]G,A" UKB controls: 23.8%<-1kGenomes-22.6
-
-
-#########################################################
-# -- version used in analyses - focus on p value threshold
-
-# GNOMAD_filtering (see script)
-# CLEARANCE:
-dat<-fread("/dcs04/duggal/data/dduchen_dat/pop_controls/UKB/ukb_plink/merged/GWAS/FullUKBmatch/QCcohort/GWAS_hcv_ukbqc_ld20_sex20PCs_clearance_REGENIE.txt")
-dat$match<-gsub("\\[.*$","",dat$ID)
-#
-# focus on markers with P<5x10-5
-gnomad_file<-bigreadr::fread2("/dcs04/duggal/data/dduchen_dat/pop_controls/gnomad/GNOMAD_NonFinnish_AF_non0_biallelic")
-# 115 million SNPs
-gnomad_file<-gnomad_file[gnomad_file$match %in% dat$match,]
-# 6,173,770 positions
-# prints out the duplicate variants, keep the one with matching alleles
-table(duplicated(gnomad_file$match))
-#165316
-# focus on moderately significant hits
-ukb<-dat
-#ukb<-ukb[ukb$P<1e-3,] #clearance: 9626
-ukb<-ukb[ukb$P<0.01,] #clearance: 9626
-#ukb<-ukb[ukb$P<1e-3,] #persistence:
-#ukb<-ukb[ukb$P<1e-3,] #persistence:
-#
-# re-filter gnomad_file to 'sig' hits
-gnomad_file<-gnomad_file[gnomad_file$match %in% ukb$match,]
-#
-gnomad_file_dup<-gnomad_file[duplicated(gnomad_file$match),]
-gnomad_file_dup$no_match<-NA
-ukb_dups<-ukb[ukb$match %in% gnomad_file_dup$match,]
-#
-for(i in 1:nrow(ukb_dups)){
-  varid<-ukb_dups[i,]$match
-  if(nrow(gnomad_file_dup[gnomad_file_dup$match==varid,])>1) {
-    #print(varid)
-    tmp_gnomad<-gnomad_file_dup[gnomad_file_dup$match==varid,]
-    alleles<-c(ukb[ukb$match==varid,]$A1,ukb[ukb$match==varid,]$A2)
-    if(nrow(tmp_gnomad[tmp_gnomad$V3 %in% alleles & tmp_gnomad$V4 %in% alleles,])>0){
-      gnomad_file_dup[gnomad_file_dup$match==varid,] <- tmp_gnomad[tmp_gnomad$V3 %in% alleles & tmp_gnomad$V4 %in% alleles,]
-    } else {
-      print(paste0(varid," not matched"))
-      gnomad_file_dup[gnomad_file_dup$match==varid,]$no_match<-"no_match"
-      }
-  }
-}
-#table(gnomad_file_dup$no_match) # 4390 markers without a match (clearance)
-#table(gnomad_file_dup$no_match) # 10 markers without a match (clearance, p<1x10-3)
-#table(gnomad_file_dup$no_match) # 56 markers without a match (clearance, p<1x10-2)
-#
-gnomad_file_dup_filt<-gnomad_file_dup
-gnomad_file_nodup<-gnomad_file[!duplicated(gnomad_file$match),]
-gnomad_file_nodup<-rbind(gnomad_file_nodup,gnomad_file_dup_filt[is.na(gnomad_file_dup_filt$no_match),1:6])
-# 9769 - clearance
-#  - persistence
-# 72991 - HCV cohort
-gnomad_file_nodup<-gnomad_file_nodup[!duplicated(gnomad_file_nodup$match),]
-# 9505 - clearance
-#  - persistence
-# 72963 - HCV cohort
-all(gnomad_file_nodup$match %in% ukb$match) #TRUE
-ukb$gnomad_check<-NA
-gnomad_file_nodup<-gnomad_file_nodup[,c(3:6)]
-table(ifelse(ukb$match %in% gnomad_file_nodup$match,NA,"gnomad_missing"))
-# 139 vars not in gnomad - clearance [p<0.01]
-# 121 vars not in gnomad - clearance [p<0.001]
-# with no p-value filter: 1381 vars not in gnomad -clearance
-#  vars not in gnomad - persistence
-# 28 vars not in gnomad - cohort
-#ukb_precheck<-ukb
-#ukb<-ukb_precheck # save just in case
-ukb$gnomad_check<-ifelse(ukb$match %in% gnomad_file_nodup$match,NA,"gnomad_missing")
-#
-gnomad_r_nodup<-gnomad_file_nodup
-ukb_filt<-ukb
-rownames(ukb_filt)<-ukb_filt$match
-for(i in 1:nrow(ukb_filt)){
-  varid<-ukb_filt$match[i]
-  ukb_maf<-as.numeric(ukb_filt$A1FREQ_CONTROLS[i])
-  if(varid %in% gnomad_r_nodup$match){
-  tmp_gnomad<-gnomad_r_nodup[gnomad_r_nodup$match==varid,]
-  gnomad_maf<-tmp_gnomad$V5
-  if(tmp_gnomad$V3==ukb_filt$ALLELE0[i]){
-    difference<-abs(ukb_maf-gnomad_maf)
-    ukb_filt$gnomad_check[i]<-ifelse(gnomad_maf>=0.1 & difference>0.05, "exclude",ukb_filt$gnomad_check[i])
-    ukb_filt$gnomad_check[i]<-ifelse(gnomad_maf<0.1 & difference>(gnomad_maf*0.25), "exclude",ukb_filt$gnomad_check[i])
-    } else if(tmp_gnomad$V3==ukb_filt$ALLELE1[i]){
-    difference<-abs(ukb_maf-(1-gnomad_maf))
-    ukb_filt$gnomad_check[i]<-ifelse(gnomad_maf>=0.1 & difference>0.05, "exclude",ukb_filt$gnomad_check[i])
-    ukb_filt$gnomad_check[i]<-ifelse(gnomad_maf<0.1 & difference>((1-gnomad_maf)*0.25), "exclude",ukb_filt$gnomad_check[i])
-    } else { print(paste0("no match for ",varid))}
-} else {
-  print(paste0(varid, " not in GNOMAD (due to MAF/non-biallelic filter?)"))
-  ukb_filt$gnomad_check[i]<-"gnomad_missing"
-}
-}
-table(ukb_filt$gnomad_check)
-#### clearance : 5161 exclude | 139 missing <-- p<0.01
-#### clearance : 1174 exclude | 121 missing <-- p<0.001
-#### persistence:  exclude
-#### HCV cohort:  5141 exclude | 28 missing <--p<0.01
 #--------------------#
 dat<-data.frame(dat)
+dat$EXTRA<-""
 dat[dat$match %in% ukb_filt[ukb_filt$gnomad_check %in% c("exclude"),]$match,]$EXTRA<-"exclude"
 dat[dat$match %in% ukb_filt[ukb_filt$gnomad_check %in% c("gnomad_missing"),]$match,]$EXTRA<-"gnomad_missing"
+#
+#fwrite(dat,file="...cc_matching/CaseControl_1to1_GWAS_HCV_Clearance_PropensityMatching_04222022.C_UKB.glm.cleaned",quote=F,col.names=T,row.names=F,sep="\t")
